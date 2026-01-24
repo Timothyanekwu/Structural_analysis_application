@@ -1,0 +1,593 @@
+"use client";
+
+import { Suspense, useState, useMemo } from "react";
+import { useSearchParams } from "next/navigation";
+import MemberForm from "@/components/MemberForm";
+import Modal from "@/components/Modal";
+import Link from "next/link";
+import StructurePreview, { Member } from "@/components/StructurePreview";
+import { BeamSolver } from "@_lib/beamSolver/beamSolver";
+import { FrameSolver } from "@_lib/frameSolver/frameSolver";
+import { Node as SolverNode } from "@_lib/elements/node";
+import { Beam, Column, InclinedMember } from "@_lib/elements/member";
+import { FixedSupport, PinnedSupport, RollerSupport, Support as SolverSupport } from "@_lib/elements/support";
+import { FixedEndMoments } from "@_lib/logic/FEMs";
+import { PointLoad as SolverPointLoad, UDL as SolverUDL, VDL as SolverVDL } from "@_lib/elements/load";
+import DiagramsSection from "@/components/DiagramsSection";
+
+function AnalysisContent() {
+  const searchParams = useSearchParams();
+  const mode = searchParams.get("type") || "beams";
+  const isFrameMode = mode === "frames";
+
+  const [activeModal, setActiveModal] = useState<'none' | 'member' | 'solve'>('none');
+  const [members, setMembers] = useState<Member[]>([]);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [solveData, setSolveData] = useState<string>("");
+  const [solveResults, setSolveResults] = useState<{
+    fems: { span: string; start: number; end: number }[];
+    endMoments: { span: string; left: number; right: number }[];
+    reactions: { id: string; x?: number; y: number }[];
+  } | null>(null);
+
+  const handleCreateMember = (data: any) => {
+    if (editingIndex !== null) {
+      const updated = [...members];
+      updated[editingIndex] = data;
+      setMembers(updated);
+      setEditingIndex(null);
+    } else {
+      setMembers([...members, data]);
+    }
+    setActiveModal('none');
+  };
+
+  const openEditModal = (index: number) => {
+    setEditingIndex(index);
+    setActiveModal('member');
+  };
+
+  const closeModal = () => {
+    setActiveModal('none');
+    setEditingIndex(null);
+  };
+  
+  const lastMember = members[members.length - 1];
+  const suggestedStart = useMemo(() => lastMember ? lastMember.endNode : undefined, [lastMember]);
+
+  const uniqueNodes = useMemo(() => {
+    const nodes = Array.from(new Set(members.flatMap(m => [
+        JSON.stringify(m.startNode),
+        JSON.stringify(m.endNode)
+    ]))).map(s => JSON.parse(s) as { x: number; y: number });
+    
+    // Spatial sorting is critical for sequential support linking and logical ID generation
+    return nodes.sort((a, b) => {
+      if (a.x !== b.x) return a.x - b.x;
+      return a.y - b.y;
+    });
+  }, [members]);
+
+  const nodeSupports = useMemo(() => {
+    const supports: Record<string, { type: string; settlement: number }> = {};
+    members.forEach(m => {
+      const sKey = JSON.stringify(m.startNode);
+      const eKey = JSON.stringify(m.endNode);
+      
+      if (m.supports.start !== "None") {
+        supports[sKey] = { 
+          type: m.supports.start, 
+          settlement: m.supports.startSettlement || 0 
+        };
+      }
+      if (m.supports.end !== "None") {
+        supports[eKey] = { 
+          type: m.supports.end, 
+          settlement: m.supports.endSettlement || 0 
+        };
+      }
+    });
+    return supports;
+  }, [members]);
+
+  const handleSolve = () => {
+    try {
+      // 1. Map frontend nodes to SolverNode instances
+      const solverNodesMap = new Map<string, SolverNode>();
+      let lastSupport: SolverSupport | null = null;
+      
+      uniqueNodes.forEach((n, idx) => {
+        const nKey = JSON.stringify(n);
+        const supportData = nodeSupports[nKey];
+        const supportType = supportData?.type || "None";
+        const settlement = supportData?.settlement || 0;
+        
+        let support: SolverSupport | null = null;
+        if (supportType === "Fixed") {
+          support = new FixedSupport(n.x, n.y, lastSupport, settlement);
+          lastSupport = support;
+        } else if (supportType === "Pinned") {
+          support = new PinnedSupport(n.x, n.y, lastSupport, settlement);
+          lastSupport = support;
+        } else if (supportType === "Roller") {
+          support = new RollerSupport(n.x, n.y, lastSupport, settlement);
+          lastSupport = support;
+        }
+        
+        const solverNode = new SolverNode(`N${idx + 1}`, n.x, n.y, support as any);
+        solverNodesMap.set(nKey, solverNode);
+      });
+
+      // 2. Map frontend members to Beam/Column/InclinedMember instances and add loads
+      const solverMembers: (Beam | Column | InclinedMember)[] = members.map((m) => {
+        const startSolverNode = solverNodesMap.get(JSON.stringify(m.startNode))!;
+        const endSolverNode = solverNodesMap.get(JSON.stringify(m.endNode))!;
+        
+        const type = m.memberType || (isFrameMode ? "Column" : "Beam");
+        let member: Beam | Column | InclinedMember;
+        
+        if (type === "Column") {
+          member = new Column(startSolverNode, endSolverNode, m.Ecoef, m.Icoef);
+        } else if (type === "Beam") {
+          member = new Beam(startSolverNode, endSolverNode, m.Ecoef, m.Icoef);
+        } else {
+          member = new InclinedMember(startSolverNode, endSolverNode, m.Ecoef, m.Icoef);
+        }
+
+        // Add loads
+        m.loads.forEach((l) => {
+          if (l.type === "Point") {
+            member.addLoad(new SolverPointLoad(l.position || 0, l.value));
+          } else if (l.type === "UDL") {
+            // Correct mapping: l.span is already the length of the UDL
+            member.addLoad(new SolverUDL(l.position || 0, l.span || 0, l.value));
+          } else if (l.type === "VDL") {
+            member.addLoad(new SolverVDL(Number(l.highValue || 0), Number(l.highPosition || 0), 0, Number(l.lowPosition || 0)));
+          }
+        });
+
+        return member;
+      });
+
+      console.log("Solver Input (Members):", solverMembers);
+
+      // 3. Execute Solver
+      let resultsData: any = {};
+      if (isFrameMode) {
+        const solver = new FrameSolver(solverMembers as any);
+        resultsData = {
+          moments: solver.updatedGetFinalMoments(),
+          reactions: Object.fromEntries(solver.updatedSolveReactions())
+        };
+      } else {
+        const solver = new BeamSolver(solverMembers as Beam[]);
+        resultsData = {
+          moments: solver.updatedGetFinalMoments(),
+          reactions: solver.updatedGetSupportReactions()
+        };
+      }
+
+      // 4. Generate Formatted Report
+      const femSolver = new FixedEndMoments();
+      let reportText = "The Fixed End Moments for the model is given below:\n";
+      const fems: { span: string; start: number; end: number }[] = [];
+      const endMoments: { span: string; left: number; right: number }[] = [];
+      const reactions: { id: string; x?: number; y: number }[] = [];
+      
+      solverMembers.forEach((m, i) => {
+        const spanId = `M${i + 1}`;
+        const femStart = femSolver.getFixedEndMoment(m, "start") || 0;
+        const femEnd = femSolver.getFixedEndMoment(m, "end") || 0;
+        
+        fems.push({ span: spanId, start: femStart, end: femEnd });
+        
+        reportText += `Member ${spanId} (N${m.startNode.id} to N${m.endNode.id}):\n`;
+        reportText += `     FEM Start: ${femStart.toFixed(2)}\n`;
+        reportText += `     FEM End: ${femEnd.toFixed(2)}\n`;
+      });
+
+      reportText += "\nthe End Moments of each span is given below:\n";
+      if (isFrameMode) {
+        const moments = resultsData.moments as Record<string, number>;
+        solverMembers.forEach((m, i) => {
+          const m1 = moments[`MOMENT${m.startNode.id}${m.endNode.id}`] || 0;
+          const m2 = moments[`MOMENT${m.endNode.id}${m.startNode.id}`] || 0;
+          
+          endMoments.push({ span: `Support ${i + 1}`, left: m1, right: m2 });
+          
+          reportText += `Support ${i + 1}:\n`;
+          reportText += `     Left Moment: ${m1.toFixed(2)}\n`;
+          reportText += `     Right Moment: ${m2.toFixed(2)}\n`;
+        });
+      } else {
+        const moments = resultsData.moments as { leftMoment: number; rightMoment: number }[];
+        solverMembers.forEach((m, i) => {
+          // moments array corresponds to Nodes [0..N]
+          // Member i connects Node i to Node i+1
+          const startNodeMoments = moments[i];
+          const endNodeMoments = moments[i+1];
+          
+          // Slope Deflection convention: Clockwise is positive.
+          // M_SD_left is m1, M_SD_right is m2.
+          const m1 = startNodeMoments?.rightMoment || 0;
+          const m2 = endNodeMoments?.leftMoment || 0;
+          
+          endMoments.push({ span: `Span ${i + 1}`, left: m1, right: m2 });
+          
+          reportText += `Span ${i + 1}:\n`;
+          reportText += `     Start Moment (M_SD): ${m1.toFixed(2)}\n`;
+          reportText += `     End Moment (M_SD): ${m2.toFixed(2)}\n`;
+        });
+      }
+
+      reportText += "\nThe Support Reactions are Given Below:\n";
+      Object.entries(resultsData.reactions as Record<string, any>).forEach(([id, r]) => {
+        let x: number | undefined = undefined;
+        let y: number = 0;
+        
+        if (r && typeof r === "object") {
+          const xVal = Number(r.xReaction) || 0;
+          const yVal = Number(r.yReaction) || 0;
+          x = xVal;
+          y = yVal;
+          reportText += `${id}:\n`;
+          reportText += `     X-reaction: ${xVal.toFixed(2)}\n`;
+          reportText += `     Y-reaction: ${yVal.toFixed(2)}\n`;
+        } else {
+          y = Number(r) || 0;
+          reportText += `${id}:\n`;
+          reportText += `     Y-reaction: ${y.toFixed(2)}\n`;
+        }
+        
+        reactions.push({ id, x, y });
+      });
+
+      setSolveResults({ fems, endMoments, reactions });
+      setSolveData(reportText);
+      setActiveModal('solve');
+      
+    } catch (error: any) {
+      console.error("Solver Error:", error);
+      alert(`Analysis failed: ${error.message}`);
+    }
+  };
+
+  const handleDownloadReport = () => {
+    const blob = new Blob([solveData], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "structural_report.txt";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="h-screen w-screen flex flex-col overflow-hidden bg-[#050505] text-white">
+      {/* Premium Navigation Header */}
+      <header className="h-16 flex items-center justify-between px-6 border-b border-white/5 glassy-panel z-50">
+        <div className="flex items-center gap-6">
+           <Link href="/" className="flex items-center gap-2 group">
+             <div className="w-8 h-8 bg-[var(--primary)] rounded-lg flex items-center justify-center transform group-hover:rotate-12 transition-transform shadow-lg shadow-[var(--primary-glow)]">
+                <span className="font-bold text-lg">S</span>
+             </div>
+             <span className="text-xl font-bold tracking-tight gradient-text">Structuro Studio</span>
+           </Link>
+           <nav className="hidden md:flex items-center gap-1 text-sm font-medium text-gray-500">
+             <span className="px-3 py-1 bg-white/5 rounded text-gray-300">{isFrameMode ? "Frame Analysis" : "Beam Analysis"}</span>
+             <span className="text-xs">/</span>
+             <span className="px-3 py-1 hover:text-white transition-colors cursor-pointer capitalize">{mode} Workspace</span>
+           </nav>
+        </div>
+        
+        <div className="flex items-center gap-4">
+           <div className="hidden lg:flex items-center gap-4 mr-4 text-[10px] uppercase tracking-widest text-gray-500 font-bold border-r border-white/10 pr-6">
+              <div className="flex flex-col items-end">
+                <span>Memory</span>
+                <span className="text-white">Optimal</span>
+              </div>
+              <div className="flex flex-col items-end">
+                <span>GPU Acceleration</span>
+                <span className="text-[var(--primary)]">Enabled</span>
+              </div>
+           </div>
+           
+           <button 
+             onClick={handleSolve}
+             className="bg-white text-black px-6 py-2 rounded-full text-sm font-bold hover:bg-gray-200 transition-all shadow-xl shadow-white/5 transform hover:scale-105 active:scale-95"
+           >
+              Solve Structure
+           </button>
+        </div>
+      </header>
+
+      <div className="flex-1 flex overflow-hidden relative">
+        
+        {/* Sidebar for members and actions */}
+        <aside className={`${isSidebarOpen ? 'w-80' : 'w-0'} transition-all duration-300 border-r border-white/5 glassy-panel h-full flex flex-col z-40 overflow-hidden`}>
+           <div className="p-5 flex items-center justify-between border-b border-white/10 bg-white/5">
+             <h2 className="font-semibold text-gray-300 uppercase tracking-widest text-[10px]">Structural Tree</h2>
+             <button 
+               onClick={() => setIsSidebarOpen(false)}
+               className="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-gray-500 hover:text-white"
+             >
+               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/></svg>
+             </button>
+           </div>
+           
+           <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#0a0a0a]/50">
+             {members.length === 0 ? (
+               <div className="h-64 flex flex-col items-center justify-center border-2 border-dashed border-white/5 rounded-2xl px-8 text-center bg-white/[0.02]">
+                  <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center mb-4 text-gray-600">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12V20"/><path d="M20 12V20"/><path d="M2 12H22"/><path d="M12 2V12"/></svg>
+                  </div>
+                  <p className="text-gray-500 text-xs leading-relaxed">No structural data found. Click "Define Member" to populate the engine.</p>
+               </div>
+             ) : (
+               members.map((m, i) => (
+                 <div key={i} className="group relative bg-white/[0.03] border border-white/5 hover:border-[var(--primary)] p-4 rounded-xl transition-all duration-300 hover:bg-white/[0.05] glow-hover">
+                   <div className="flex justify-between items-start mb-3">
+                     <span className="text-[10px] font-black text-[var(--primary)] uppercase tracking-widest">Component M{i+1}</span>
+                     <div className="flex gap-2">
+                        <button onClick={() => openEditModal(i)} className="p-1 rounded hover:bg-white/10 text-gray-500 hover:text-white transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+                        <button onClick={() => setMembers(members.filter((_, idx) => idx !== i))} className="p-1 rounded hover:bg-red-500/10 text-gray-500 hover:text-red-400 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+                     </div>
+                   </div>
+                    <div className="flex flex-col gap-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex flex-col">
+                          <span className="text-xs font-black tracking-tight mb-0.5">N{i+1} ➔ N{i+2}</span>
+                          <span className="text-[9px] font-black bg-white/10 px-1.5 py-0.5 rounded text-gray-400 border border-white/5 w-fit lowercase italic">
+                            {m.memberType || "Beam"}
+                          </span>
+                        </div>
+                        <div className="text-right flex flex-col items-end">
+                          <span className="text-gray-600 text-[8px] uppercase font-black mb-0.5">Total Vector Mass</span>
+                          <span className="text-gray-200 text-[10px] font-bold">{m.loads.length} Loads</span>
+                        </div>
+                      </div>
+                      
+                      <div className="pt-2 border-t border-white/5">
+                        <span className="text-gray-600 text-[8px] uppercase font-black block mb-1 tracking-widest">Global Matrix POS</span>
+                        <div className="flex justify-between text-[10px] font-bold tracking-tighter text-gray-400">
+                           <span>{isFrameMode ? `(${m.startNode.x}, ${m.startNode.y})` : `${m.startNode.x}m`}</span>
+                           <span className="text-gray-700 mx-1">→</span>
+                           <span>{isFrameMode ? `(${m.endNode.x}, ${m.endNode.y})` : `${m.endNode.x}m`}</span>
+                        </div>
+                      </div>
+                    </div>
+                 </div>
+               ))
+             )}
+           </div>
+
+           <div className="p-5 border-t border-white/10 bg-black/40 backdrop-blur-md">
+             <button
+               onClick={() => { setEditingIndex(null); setActiveModal('member'); }}
+               className="w-full bg-[var(--primary)] text-white py-4 rounded-2xl font-black uppercase text-xs tracking-widest transition-all shadow-2xl shadow-[var(--primary-glow)] flex items-center justify-center gap-3 hover:translate-y-[-2px] active:translate-y-[1px]"
+             >
+               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+               Define Member
+             </button>
+           </div>
+        </aside>
+
+        {!isSidebarOpen && (
+           <button 
+             onClick={() => setIsSidebarOpen(true)}
+             className="absolute left-6 top-1/2 -translate-y-1/2 z-50 p-3 glassy-panel rounded-full hover:bg-white/10 transition-all duration-300 shadow-2xl"
+           >
+             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m13 17 5-5-5-5"/><path d="m6 17 5-5-5-5"/></svg>
+           </button>
+        )}
+
+        {/* Main Canvas Workspace */}
+        <main className="flex-1 relative bg-[#050505] overflow-hidden group/canvas">
+           {/* Floating HUD Interface */}
+           <div className="absolute top-8 left-1/2 -translate-x-1/2 glassy-panel px-6 py-3 rounded-half flex items-center gap-8 z-30 shadow-3xl border-white/5 transition-all hover:bg-black/60 rounded-full">
+              <div className="flex items-center gap-6 text-[10px] font-black uppercase tracking-widest text-gray-500">
+                <span className="flex items-center gap-2 transition-colors hover:text-white cursor-help"><div className="w-1.5 h-1.5 rounded-full bg-[var(--primary)] shadow-[0_0_8px_var(--primary-glow)]"></div> Active Node</span>
+                <span className="flex items-center gap-2 transition-colors hover:text-white cursor-help"><div className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] shadow-[0_0_8px_var(--accent-glow)]"></div> Vector Force</span>
+                <span className="flex items-center gap-2 transition-colors hover:text-white cursor-help"><div className="w-1.5 h-1.5 rounded-full bg-[var(--support)]  shadow-[0_0_8px_var(--accent-glow)]"></div> Support Element</span>
+              </div>
+           </div>
+
+           <StructurePreview members={members} />
+           
+           {members.length === 0 && (
+             <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none animate-in fade-in zoom-in duration-1000">
+               <div className="w-32 h-32 rounded-[2.5rem] glassy-panel flex items-center justify-center mb-10 border-white/10 shadow-3xl bg-white/[0.01]">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-white/10"><path d="M22 12H2"/><path d="M5 12v4"/><path d="M19 12v4"/><path d="M12 12V8"/></svg>
+               </div>
+               <h3 className="text-4xl font-black text-gray-200 tracking-tighter mb-4">ENGINE OFFLINE</h3>
+               <p className="text-gray-500 max-w-sm text-center text-sm font-medium leading-relaxed px-12">Initialize the structural matrix by defining your first beam member and node coordinates.</p>
+             </div>
+           )}
+
+           {/* Precision HUD (Bottom) */}
+           <div className="absolute bottom-8 left-10 right-10 flex justify-between items-end">
+             <div className="flex flex-col gap-4">
+               <div className="glassy-panel px-5 py-3 rounded-2xl flex gap-10 items-center animate-in slide-in-from-bottom-5 duration-700 shadow-2xl">
+                  <div className="flex flex-col">
+                    <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Nodes</span>
+                    <span className="text-xl font-bold tabular-nums">{uniqueNodes.length.toString().padStart(2, '0')}</span>
+                  </div>
+                  <div className="w-px h-8 bg-white/10"></div>
+                  <div className="flex flex-col">
+                    <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Span</span>
+                    <span className="text-xl font-bold tabular-nums">{members.reduce((acc, m) => acc + (m.endNode.x - m.startNode.x), 0)}m</span>
+                  </div>
+               </div>
+             </div>
+
+             <div className="flex flex-col items-end gap-3 translate-y-2">
+                <div className="flex items-center gap-2 text-[10px] font-black uppercase text-gray-600 tracking-[0.2em]">
+                   <span className="animate-pulse">Real-time Computation</span>
+                   <div className="w-1 h-1 rounded-full bg-green-500"></div>
+                </div>
+                <div className="h-0.5 w-64 bg-white/5 overflow-hidden rounded-full">
+                   <div className="h-full bg-[var(--primary)] w-3/4 shadow-[0_0_10px_var(--primary)]"></div>
+                </div>
+             </div>
+           </div>
+        </main>
+      </div>
+
+      <Modal isOpen={activeModal === 'member'} onClose={closeModal}>
+        <MemberForm 
+           mode={isFrameMode ? "frames" : "beams"}
+           onSuccess={handleCreateMember} 
+           initialStartNode={suggestedStart}
+           existingNodes={uniqueNodes}
+           nodeSupports={nodeSupports as any}
+           initialData={editingIndex !== null ? members[editingIndex] : undefined}
+        />
+      </Modal>
+
+      <Modal isOpen={activeModal === 'solve'} onClose={() => setActiveModal('none')}>
+         <div className="p-8 w-full">
+            <header className="flex items-center justify-between mb-8">
+              <div>
+                <h2 className="text-2xl font-black uppercase tracking-tighter text-white">Analysis Kernel Model</h2>
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mt-1">Detailed Structural Schema Export</p>
+              </div>
+              <div className="flex items-center gap-3">
+                  <button 
+                    onClick={handleDownloadReport}
+                    className="px-4 py-2 bg-[var(--primary)] hover:opacity-90 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-lg shadow-[var(--primary-glow)]"
+                  >
+                    Download Report
+                  </button>
+                  <button 
+                    onClick={() => {
+                      navigator.clipboard.writeText(solveData);
+                    }}
+                    className="px-4 py-2 bg-white/5 hover:bg-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border border-white/10"
+                  >
+                    Copy Buffer
+                  </button>
+              </div>
+            </header>
+
+            <div className="space-y-10">
+              {solveResults && (
+                <>
+                  <section>
+                    <h3 className="text-gray-500 font-black uppercase tracking-widest text-[10px] mb-6 flex items-center gap-3">
+                      <div className="w-1 h-3 bg-[var(--primary)] rounded-full"></div>
+                      Fixed End Moments (FEMs)
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {solveResults.fems.map((f, i) => (
+                        <div key={i} className="bg-white/[0.02] border border-white/5 p-5 rounded-2xl hover:border-[var(--primary)]/30 transition-all group">
+                          <p className="text-[10px] font-bold text-gray-400 uppercase mb-3 tracking-tighter">Member {f.span}</p>
+                          <div className="flex justify-between items-center">
+                            <div className="flex flex-col">
+                              <span className="text-[9px] text-gray-500 uppercase font-black tracking-widest">Start</span>
+                              <span className="text-xl font-black text-[var(--primary)] tabular-nums group-hover:drop-shadow-[0_0_8px_var(--primary-glow)] transition-all">{f.start.toFixed(2)}</span>
+                            </div>
+                            <div className="w-px h-8 bg-white/5 mx-4"></div>
+                            <div className="flex flex-col items-end">
+                              <span className="text-[9px] text-gray-500 uppercase font-black tracking-widest">End</span>
+                              <span className="text-xl font-black text-[var(--primary)] tabular-nums group-hover:drop-shadow-[0_0_8px_var(--primary-glow)] transition-all">{f.end.toFixed(2)}</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section>
+                    <h3 className="text-gray-500 font-black uppercase tracking-widest text-[10px] mb-6 flex items-center gap-3">
+                      <div className="w-1 h-3 bg-[var(--accent)] rounded-full"></div>
+                      Final Span End Moments
+                    </h3>
+                    <div className="space-y-3">
+                      {solveResults.endMoments.map((m, i) => (
+                        <div key={i} className="bg-white/[0.02] border border-white/5 p-4 rounded-xl flex items-center justify-between hover:bg-white/[0.04] transition-colors group">
+                          <span className="text-xs font-bold text-gray-300 uppercase tracking-tighter italic">{m.span}</span>
+                          <div className="flex gap-12">
+                            <div className="flex items-baseline gap-2">
+                              <span className="text-[8px] font-black text-gray-600 uppercase tracking-widest">Left:</span>
+                              <span className="text-sm font-bold text-[var(--accent)] tracking-tight group-hover:drop-shadow-[0_0_8px_var(--accent-glow)] transition-all">{m.left.toFixed(2)} <span className="text-[8px] font-medium opacity-50">kNm</span></span>
+                            </div>
+                            <div className="flex items-baseline gap-2">
+                              <span className="text-[8px] font-black text-gray-600 uppercase tracking-widest">Right:</span>
+                              <span className="text-sm font-bold text-[var(--accent)] tracking-tight group-hover:drop-shadow-[0_0_8px_var(--accent-glow)] transition-all">{m.right.toFixed(2)} <span className="text-[8px] font-medium opacity-50">kNm</span></span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section>
+                    <h3 className="text-gray-500 font-black uppercase tracking-widest text-[10px] mb-6 flex items-center gap-3">
+                      <div className="w-1 h-3 bg-blue-500 rounded-full"></div>
+                      Support Nodal Reactions
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {solveResults.reactions.map((r, i) => (
+                        <div key={i} className="bg-[#0c0c0c] border border-white/5 p-5 rounded-2xl relative overflow-hidden group hover:border-blue-500/30 transition-all">
+                           <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity">
+                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-blue-500"><path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/></svg>
+                           </div>
+                           <h4 className="text-[10px] font-black text-[var(--primary)] uppercase mb-4 tracking-widest border-l-2 border-[var(--primary)] pl-2">{r.id}</h4>
+                           <div className="space-y-4">
+                             {r.x !== undefined && (
+                               <div className="flex items-end justify-between border-b border-white/5 pb-2">
+                                 <span className="text-[8px] font-bold text-gray-600 uppercase">X - Reaction</span>
+                                 <span className="text-lg font-black text-blue-400 tabular-nums">{r.x.toFixed(2)} <span className="text-[10px] text-gray-500 font-medium">kN</span></span>
+                               </div>
+                             )}
+                             <div className="flex items-end justify-between">
+                               <span className="text-[8px] font-bold text-gray-600 uppercase">Y - Reaction</span>
+                               <span className="text-lg font-black text-blue-400 tabular-nums">{r.y.toFixed(2)} <span className="text-[10px] text-gray-500 font-medium">kN</span></span>
+                             </div>
+                           </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                </>
+              )}
+              
+              {solveResults && (
+                <DiagramsSection members={members} solveResults={solveResults} />
+              )}
+
+            </div>
+            
+            <footer className="mt-8 flex justify-center">
+               <p className="text-[10px] text-gray-600 italic font-medium">Model output successfully synchronized with terminal console.</p>
+            </footer>
+         </div>
+      </Modal>
+
+      {/* Background Ambient Effects */}
+      <div className="fixed inset-0 pointer-events-none z-0 opacity-20 overflow-hidden">
+         <div className="absolute -top-[20%] -left-[10%] w-[60%] h-[60%] bg-[var(--primary)] rounded-full blur-[160px] opacity-30"></div>
+         <div className="absolute top-[40%] -right-[10%] w-[40%] h-[50%] bg-[var(--accent)] rounded-full blur-[180px] opacity-20"></div>
+      </div>
+    </div>
+  );
+}
+
+export default function AnalysisPage() {
+  return (
+    <Suspense fallback={
+      <div className="h-screen w-screen bg-[#050505] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-6">
+          <div className="w-16 h-16 border-4 border-white/5 border-t-[var(--primary)] rounded-full animate-spin shadow-[0_0_20px_var(--primary-glow)]"></div>
+          <p className="text-[10px] font-black uppercase tracking-[0.4em] text-gray-400 animate-pulse">Syncing Structural Kernel</p>
+        </div>
+      </div>
+    }>
+      <AnalysisContent />
+    </Suspense>
+  );
+}
+

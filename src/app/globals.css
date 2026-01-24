@@ -1,8 +1,26 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Enforce Dark Theme by default */
+  --background: #050505;
+  --foreground: #fafafa;
+  
+  /* Brand Colors */
+  --primary: #096B30; /* Structuro Green */
+  --primary-hover: #0b803a;
+  --primary-glow: rgba(9, 107, 48, 0.4);
+  
+  /* Cards/Surfaces */
+  --card-bg: rgba(23, 23, 23, 0.7);
+  --card-border: rgba(255, 255, 255, 0.1);
+
+  /* Accent for Forces (Radiant Pink) */
+  --accent: #ec4899;
+  --accent-glow: rgba(236, 72, 153, 0.3);
+
+  /* Support Colors (Technical Blue) */
+  --support: #0ea5e9;
+  --support-glow: rgba(14, 165, 233, 0.3);
 }
 
 @theme inline {
@@ -12,15 +30,37 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
-  background: var(--background);
+  background: radial-gradient(circle at top left, #121212, #050505);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  min-height: 100vh;
+}
+
+@layer utilities {
+  .no-spinner::-webkit-inner-spin-button,
+  .no-spinner::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .no-spinner {
+    -moz-appearance: textfield;
+  }
+
+  .glassy-panel {
+    background: var(--card-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--card-border);
+  }
+
+  .gradient-text {
+    background: linear-gradient(135deg, #fff 0%, #888 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .glow-hover:hover {
+    box-shadow: 0 0 20px var(--primary-glow);
+  }
 }
