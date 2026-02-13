@@ -152,7 +152,7 @@ export class FixedEndMoments {
 
   getFixedEndMoment(
     member: Beam | Column | InclinedMember,
-    position: "start" | "end"
+    position: "start" | "end",
   ) {
     const loads = member.loads;
     const length = member.length;
@@ -195,7 +195,7 @@ export class FixedEndMoments {
             term = (w / l ** 3) * (tl1 + tl2 + tl3) * -1;
           } else {
             throw new Error(
-              "The Highest Load position cannot be the same as the Lowest Load position for a VD Loading"
+              "The Highest Load position cannot be the same as the Lowest Load position for a VD Loading",
             );
           }
         }
@@ -249,7 +249,7 @@ export class FixedEndMoments {
             term = (w / l ** 3) * (tr1 + tr2) * -1;
           } else {
             throw new Error(
-              "The Highest Load position cannot be the same as the Lowest Load position for a VD Loading"
+              "The Highest Load position cannot be the same as the Lowest Load position for a VD Loading",
             );
           }
         }

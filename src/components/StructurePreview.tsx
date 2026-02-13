@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useRef, useState, useEffect } from "react";
+import FrameDiagramOverlay, { MemberDiagramData } from "./FrameDiagramOverlay";
 
 type Point = { x: number; y: number };
 type SupportType = "None" | "Fixed" | "Pinned" | "Roller";
@@ -32,9 +33,21 @@ export interface Member {
 interface StructurePreviewProps {
   members: Member[];
   highlightNode?: { x: number; y: number } | null;
+  diagramData?: MemberDiagramData[];
+  activeDiagram?: 'bmd' | 'sfd' | 'both' | 'none';
+  hideLoads?: boolean;
+  autoHeight?: boolean;
 }
 
-export default function StructurePreview({ members, highlightNode }: StructurePreviewProps) {
+export default function StructurePreview({ 
+  members, 
+  highlightNode,
+  diagramData = [],
+  activeDiagram = 'none',
+  hideLoads = false,
+  autoHeight = false
+}: StructurePreviewProps) {
+
   const containerRef = useRef<SVGSVGElement>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
 
@@ -59,21 +72,52 @@ export default function StructurePreview({ members, highlightNode }: StructurePr
 
   // Find bounds for scaling
   const allNodes = members.flatMap((m) => [m.startNode, m.endNode]);
-  const minX = Math.min(0, ...allNodes.map((n) => Number(n.x || 0)));
-  const maxX = Math.max(10, ...allNodes.map((n) => Number(n.x || 0)));
-  const minY = Math.min(0, ...allNodes.map((n) => Number(n.y || 0)));
-  const maxY = Math.max(0, ...allNodes.map((n) => Number(n.y || 0)));
+  let minX = Math.min(0, ...allNodes.map((n) => Number(n.x || 0)));
+  let maxX = Math.max(10, ...allNodes.map((n) => Number(n.x || 0)));
+  let minY = Math.min(0, ...allNodes.map((n) => Number(n.y || 0)));
+  let maxY = Math.max(0, ...allNodes.map((n) => Number(n.y || 0)));
+
+  // Expand bounds to fit diagrams if active
+  if (activeDiagram !== 'none' && members.length > 0) {
+    const memberLengths = members.map(m => {
+      const dx = m.endNode.x - m.startNode.x;
+      const dy = m.endNode.y - m.startNode.y;
+      return Math.sqrt(dx * dx + dy * dy);
+    });
+    const minLength = Math.min(...memberLengths) || 1;
+    // Diagram height is roughly 0.3 * minLength. 
+    // We add 0.5 * minLength padding to be safe for labels and peaks.
+    const diagramMargin = minLength * 0.5;
+    
+    minX -= diagramMargin;
+    maxX += diagramMargin;
+    minY -= diagramMargin;
+    maxY += diagramMargin;
+  }
 
   const availableWidth = width - 2 * padding;
-  const availableHeight = height - 2 * padding;
+  // For autoHeight, we don't constrain by available height initially
+  const availableHeight = autoHeight ? Infinity : (height - 2 * padding);
 
   const rangeX = maxX - minX || 1;
   const rangeY = maxY - minY || 1;
 
   // Uniform Scaling logic
-  const scale = Math.min(availableWidth / rangeX, availableHeight / rangeY);
+  let scale = 1;
+  if (autoHeight) {
+    // If autoHeight, scale to fit width, but respect a max scale to prevent huge elements
+    scale = (availableWidth / rangeX);
+    // Optional: clamp scale if needed, or let it be large
+  } else {
+    scale = Math.min(availableWidth / rangeX, availableHeight / rangeY);
+  }
+  
+  // Calculate actual height needed if autoHeight
+  const contentHeight = rangeY * scale + 2 * padding;
+  const finalHeight = autoHeight ? Math.max(contentHeight, 400) : height;
+
   const centerX = padding + (availableWidth - rangeX * scale) / 2;
-  const centerY = padding + (availableHeight - rangeY * scale) / 2;
+  const centerY = padding + ((autoHeight ? (finalHeight - 2 * padding) : availableHeight) - rangeY * scale) / 2;
 
   const scaleX = (x: number) => {
     const val = Number(x || 0);
@@ -129,11 +173,11 @@ export default function StructurePreview({ members, highlightNode }: StructurePr
   const idPrefix = React.useId().replace(/:/g, "");
 
   return (
-    <div className="w-full h-full relative overflow-hidden flex items-center justify-center p-4">
+    <div className={`w-full ${autoHeight ? '' : 'h-full'} relative overflow-hidden flex items-center justify-center p-4`} style={{ height: autoHeight ? finalHeight : '100%' }}>
       <svg
         ref={containerRef}
-        viewBox={`0 0 ${width} ${height}`}
-        className="w-full h-full"
+        viewBox={`0 0 ${width} ${autoHeight ? finalHeight : height}`}
+        className={`w-full ${autoHeight ? '' : 'h-full'}`}
         xmlns="http://www.w3.org/2000/svg"
       >
         <defs>
@@ -194,7 +238,7 @@ export default function StructurePreview({ members, highlightNode }: StructurePr
               {renderSupport(member.supports.end, member.endNode.x, member.endNode.y, `support-end-${i}`)}
 
               {/* Loads */}
-              {member.loads.map((load, j) => {
+              {!hideLoads && member.loads.map((load, j) => {
                 const loadVal = Number(load.value || 0).toFixed(1);
                 const angle = (load.angle ?? 90) * (Math.PI / 180); // Radians, default 90 (down)
                 
@@ -377,6 +421,18 @@ export default function StructurePreview({ members, highlightNode }: StructurePr
             </g>
           );
         })}
+
+        {/* Diagram Overlay (BMD/SFD on members) */}
+        {diagramData.length > 0 && activeDiagram !== 'none' && (
+          <FrameDiagramOverlay
+            members={members}
+            diagramData={diagramData}
+            scaleX={scaleX}
+            scaleY={scaleY}
+            scale={scale}
+            activeDiagram={activeDiagram}
+          />
+        )}
 
         {/* Focus Highlight */}
         {highlightNode && (

@@ -14,6 +14,8 @@ import { FixedSupport, PinnedSupport, RollerSupport, Support as SolverSupport } 
 import { FixedEndMoments } from "@_lib/logic/FEMs";
 import { PointLoad as SolverPointLoad, UDL as SolverUDL, VDL as SolverVDL } from "@_lib/elements/load";
 import DiagramsSection from "@/components/DiagramsSection";
+import { calculateDiagramData } from "@/utils/diagramUtils";
+import { MemberDiagramData } from "@/components/FrameDiagramOverlay";
 
 function AnalysisContent() {
   const searchParams = useSearchParams();
@@ -30,6 +32,20 @@ function AnalysisContent() {
     endMoments: { span: string; left: number; right: number }[];
     reactions: { id: string; x?: number; y: number }[];
   } | null>(null);
+  const [activeDiagram, setActiveDiagram] = useState<'bmd' | 'sfd' | 'both' | 'none'>('none');
+
+  // Compute diagram data for overlay when solve results are available
+  const diagramData: MemberDiagramData[] = useMemo(() => {
+    if (!solveResults || !members.length) return [];
+    return members.map((member, index) => {
+      const moments = solveResults.endMoments[index];
+      const data = calculateDiagramData(
+        member,
+        { leftMoment: moments?.left || 0, rightMoment: moments?.right || 0 }
+      );
+      return { memberIndex: index, data };
+    });
+  }, [members, solveResults]);
 
   const handleCreateMember = (data: any) => {
     if (editingIndex !== null) {
@@ -555,8 +571,71 @@ function AnalysisContent() {
                 </>
               )}
               
+              {/* Diagram Visualization Section */}
               {solveResults && (
-                <DiagramsSection members={members} solveResults={solveResults} />
+                isFrameMode ? (
+                  <section>
+                    <div className="flex items-center justify-between mb-6">
+                      <h3 className="text-gray-500 font-black uppercase tracking-widest text-[10px] flex items-center gap-3">
+                        <div className="w-1 h-3 bg-gradient-to-b from-blue-500 to-emerald-500 rounded-full"></div>
+                        Force Diagrams on Structure
+                      </h3>
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={() => setActiveDiagram(activeDiagram === 'bmd' ? 'none' : 'bmd')}
+                          className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all ${
+                            activeDiagram === 'bmd' || activeDiagram === 'both' 
+                              ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' 
+                              : 'bg-white/5 text-gray-500 hover:text-white border border-white/5'
+                          }`}
+                        >
+                          BMD
+                        </button>
+                        <button 
+                          onClick={() => setActiveDiagram(activeDiagram === 'sfd' ? 'none' : 'sfd')}
+                          className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all ${
+                            activeDiagram === 'sfd' || activeDiagram === 'both' 
+                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                              : 'bg-white/5 text-gray-500 hover:text-white border border-white/5'
+                          }`}
+                        >
+                          SFD
+                        </button>
+                        <button 
+                          onClick={() => setActiveDiagram(activeDiagram === 'both' ? 'none' : 'both')}
+                          className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all ${
+                            activeDiagram === 'both' 
+                              ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' 
+                              : 'bg-white/5 text-gray-500 hover:text-white border border-white/5'
+                          }`}
+                        >
+                          Both
+                        </button>
+                      </div>
+                    </div>
+                    <div className="bg-[#0a0a0a] border border-white/5 rounded-2xl overflow-hidden min-h-[400px]">
+                      <StructurePreview 
+                        members={members} 
+                        diagramData={diagramData}
+                        activeDiagram={activeDiagram}
+                        hideLoads={true}
+                        autoHeight={true}
+                      />
+                    </div>
+                    <div className="flex items-center gap-6 mt-4 text-[10px] text-gray-500">
+                      <span className="flex items-center gap-2">
+                        <div className="w-3 h-0.5 bg-blue-500 rounded"></div>
+                        Bending Moment (BMD)
+                      </span>
+                      <span className="flex items-center gap-2">
+                        <div className="w-3 h-0.5 bg-emerald-500 rounded"></div>
+                        Shear Force (SFD)
+                      </span>
+                    </div>
+                  </section>
+                ) : (
+                  <DiagramsSection members={members} solveResults={solveResults} />
+                )
               )}
 
             </div>

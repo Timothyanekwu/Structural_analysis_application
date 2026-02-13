@@ -204,7 +204,7 @@ export class SlopeDeflection {
             [
               {
                 name: "c",
-                coefficient: ((FEMToEnd ?? 0) - ((FEMToStart ?? 0) / 2)) * -1, //prettier-ignore
+                coefficient: ((FEMToEnd ?? 0) - ((FEMToStart ?? 0) / 2)), //prettier-ignore
               },
               {
                 name: `EIteta${curr.id}`,
@@ -306,7 +306,7 @@ export class SlopeDeflection {
           clk[`MOMENT${currMember.endNode.id}${currMember.startNode.id}`] = [
             {
               name: "c",
-              coefficient: ((FEMToStart ?? 0) - ((FEMToEnd ?? 0) / 2)) * -1, //prettier-ignore
+              coefficient: ((FEMToStart ?? 0) - ((FEMToEnd ?? 0) / 2)), //prettier-ignore
             },
             {
               name: `EIteta${curr.id}`,
