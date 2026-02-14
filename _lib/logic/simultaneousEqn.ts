@@ -1,9 +1,12 @@
-import { matrix, lusolve, multiply, pinv } from "mathjs";
+import { add, identity, matrix, lusolve, multiply, transpose } from "mathjs";
 
 type EquationProps = { [key: string]: number };
+type SolveOptions = {
+  allowLeastSquares?: boolean;
+};
 
 export class Equation {
-  solveEquations(equations: EquationProps[]) {
+  solveEquations(equations: EquationProps[], options: SolveOptions = {}) {
     // Step 1: collect all unknowns (exclude 'c')
     const variableNames = Array.from(
       new Set(
@@ -18,16 +21,28 @@ export class Equation {
     const numEquations = K.length;
     const numUnknowns = variableNames.length;
 
-    if (numEquations === 0) {
-      return {};
+    if (numUnknowns === 0) return {};
+    if (numEquations !== numUnknowns && !options.allowLeastSquares) {
+      throw new Error(
+        `Slope-deflection system is not square: equations=${numEquations}, unknowns=${numUnknowns}`,
+      );
     }
 
-    // Step 3: solve (square vs non-square)
+    // Step 3: solve
     let solutionArray;
     if (numEquations === numUnknowns) {
       solutionArray = lusolve(matrix(K), matrix(F));
     } else {
-      solutionArray = multiply(pinv(matrix(K)), matrix(F));
+      // Regularized least-squares to avoid singular pseudo-inverse failures.
+      const Km = matrix(K);
+      const Ft = matrix(F);
+      const Kt = transpose(Km);
+      const KtK = multiply(Kt, Km);
+      const n = variableNames.length;
+      const lambda = 1e-9;
+      const A = add(KtK, multiply(lambda, identity(n)));
+      const b = multiply(Kt, Ft);
+      solutionArray = lusolve(A as any, b as any);
     }
 
     // Step 4: convert to plain JS array

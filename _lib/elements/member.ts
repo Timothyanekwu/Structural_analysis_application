@@ -4,6 +4,8 @@ import { PointLoad, UDL, VDL } from "./load";
 import { FixedSupport, RollerSupport, PinnedSupport } from "./support";
 import { Node } from "./node";
 
+import { SectionUtils } from "./section_utils";
+
 interface EndReactions {
   RxStart: number;
   RyStart: number;
@@ -18,11 +20,22 @@ export abstract class Member {
   Ecoef: number;
   Icoef: number;
   endReactions: EndReactions;
+  b: number;
+  h: number;
 
-  constructor(startNode: Node, endNode: Node, Ecoef = 1, Icoef = 1) {
+  constructor(
+    startNode: Node,
+    endNode: Node,
+    b = 1,
+    h = 1,
+    Ecoef = 1,
+    Icoef = 1,
+  ) {
     this.startNode = startNode;
     this.endNode = endNode;
     this.loads = [];
+    this.b = b;
+    this.h = h;
     this.Ecoef = Ecoef;
     this.Icoef = Icoef;
     this.endReactions = {
@@ -42,7 +55,7 @@ export abstract class Member {
   get angle(): number {
     return Math.atan2(
       this.endNode.y - this.startNode.y,
-      this.endNode.x - this.startNode.x
+      this.endNode.x - this.startNode.x,
     );
   }
 
@@ -61,22 +74,35 @@ export abstract class Member {
 }
 
 export class Beam extends Member {
+  type?: "L" | "T" | null;
   constructor(
     startNode: Node,
     endNode: Node,
     // leftSupport: FixedSupport | RollerSupport | PinnedSupport | null,
     // rightSupport: FixedSupport | RollerSupport | PinnedSupport | null,
+    b = 1,
+    h = 1,
+    type: "L" | "T" | null = null,
     Ecoef = 1,
-    Icoef = 1
+    Icoef?: number,
+    slabThickness = 0,
   ) {
-    super(startNode, endNode, Ecoef, Icoef);
+    // Use user-provided inertia when supplied; otherwise derive from section dimensions.
+    const shouldDeriveI =
+      Icoef === undefined || Icoef === null || Number(Icoef) <= 0;
+    const calculatedIcoef =
+      b > 0 && h > 0 && shouldDeriveI
+        ? SectionUtils.momentOfInertia(b, h, slabThickness)
+        : Number(Icoef);
+    super(startNode, endNode, b, h, Ecoef, calculatedIcoef || 1);
+    this.type = type;
     // this.leftSupport = leftSupport;
     // this.rightSupport = rightSupport;
 
     if (this.startNode.y !== this.endNode.y) {
       throw new Error(
         `Beam must be horizontal: Node${this.startNode.id}.y is not equal to Node${this.endNode.id}.y, 
-        Node${this.startNode.id} is ${this.startNode.y} and Node${this.endNode.id} is ${this.endNode.y}  `
+        Node${this.startNode.id} is ${this.startNode.y} and Node${this.endNode.id} is ${this.endNode.y}  `,
       );
     }
 
@@ -86,13 +112,26 @@ export class Beam extends Member {
 }
 
 export class Column extends Member {
-  constructor(startNode: Node, endNode: Node, Ecoef = 1, Icoef = 1) {
-    super(startNode, endNode, Ecoef, Icoef);
+  constructor(
+    startNode: Node,
+    endNode: Node,
+    b = 1,
+    h = 1,
+    Ecoef = 1,
+    Icoef?: number,
+  ) {
+    const shouldDeriveI =
+      Icoef === undefined || Icoef === null || Number(Icoef) <= 0;
+    const calculatedIcoef =
+      b > 0 && h > 0 && shouldDeriveI
+        ? SectionUtils.momentOfInertia(b, h)
+        : Number(Icoef);
+    super(startNode, endNode, b, h, Ecoef, calculatedIcoef || 1);
 
     if (this.startNode.x !== this.endNode.x) {
       throw new Error(
         `Column must be vertical: Node${this.startNode.id}.x is not equal to Node${this.endNode.id}.x, 
-        Node${this.startNode.id}.x is ${this.startNode.x} and Node${this.endNode.id}.x is ${this.endNode.x} `
+        Node${this.startNode.id}.x is ${this.startNode.x} and Node${this.endNode.id}.x is ${this.endNode.x} `,
       );
     }
 
@@ -102,8 +141,21 @@ export class Column extends Member {
 }
 
 export class InclinedMember extends Member {
-  constructor(startNode: Node, endNode: Node, Ecoef = 1, Icoef = 1) {
-    super(startNode, endNode, Ecoef, Icoef);
+  constructor(
+    startNode: Node,
+    endNode: Node,
+    b = 1,
+    h = 1,
+    Ecoef = 1,
+    Icoef?: number,
+  ) {
+    const shouldDeriveI =
+      Icoef === undefined || Icoef === null || Number(Icoef) <= 0;
+    const calculatedIcoef =
+      b > 0 && h > 0 && shouldDeriveI
+        ? SectionUtils.momentOfInertia(b, h)
+        : Number(Icoef);
+    super(startNode, endNode, b, h, Ecoef, calculatedIcoef || 1);
     if (
       Math.abs(this.angle) < 0.01 ||
       Math.abs(Math.abs(this.angle) - Math.PI / 2) < 0.01

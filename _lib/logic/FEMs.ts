@@ -179,25 +179,27 @@ export class FixedEndMoments {
           const t2 = (1 / 4) * (b ** 4 - a ** 4);
           term = (w / l ** 2) * (t1 - t2);
         } else if (curr.name === "VDL") {
+          // a = zero-load position, b = peak-load position
           const a = curr.lowPosition;
           const b = curr.highPosition;
           const w = curr.highMagnitude;
           const l = length;
+          const span = b - a; // signed span of the triangular load
 
-          if (b > a) {
-            const tr1 = (l / 4) * (b ** 4 - a ** 4);
-            const tr2 = (1 / 5) * (a ** 5 - b ** 5);
-            term = (w / l ** 3) * (tr1 + tr2);
-          } else if (b < a) {
-            const tl1 = (l ** 2 / 3) * (b ** 3 - a ** 3);
-            const tl2 = (1 / 5) * (b ** 5 - a ** 5);
-            const tl3 = (l / 2) * (a ** 4 - b ** 4);
-            term = (w / l ** 3) * (tl1 + tl2 + tl3) * -1;
-          } else {
+          if (span === 0) {
             throw new Error(
               "The Highest Load position cannot be the same as the Lowest Load position for a VD Loading",
             );
           }
+
+          const lo = Math.min(a, b);
+          const hi = Math.max(a, b);
+
+          // Antiderivative of (x-a)·x²·(l-x)  [kernel for right/end FEM]
+          const FR = (x: number) =>
+            (-a * l * x ** 3) / 3 + ((l + a) * x ** 4) / 4 - x ** 5 / 5;
+
+          term = (w / (span * l ** 2)) * (FR(hi) - FR(lo));
         }
 
         // Kahan summation
@@ -206,8 +208,6 @@ export class FixedEndMoments {
         c = t - rightMoment - y;
         rightMoment = t;
       }
-
-      // console.log("FEM RightMoment: ", rightMoment);
 
       return rightMoment * -1; // clockwise
     } else if (position === "start") {
@@ -233,25 +233,30 @@ export class FixedEndMoments {
           const t3 = (1 / 4) * (b ** 4 - a ** 4);
           term = (w / l ** 2) * (t1 - t2 + t3);
         } else if (curr.name === "VDL") {
+          // a = zero-load position, b = peak-load position
           const a = curr.lowPosition;
           const b = curr.highPosition;
           const w = curr.highMagnitude;
           const l = length;
+          const span = b - a; // signed span of the triangular load
 
-          if (b > a) {
-            const tl1 = (l ** 2 / 3) * (b ** 3 - a ** 3);
-            const tl2 = (1 / 5) * (b ** 5 - a ** 5);
-            const tl3 = (l / 2) * (a ** 4 - b ** 4);
-            term = (w / l ** 3) * (tl1 + tl2 + tl3);
-          } else if (b < a) {
-            const tr1 = (l / 4) * (b ** 4 - a ** 4);
-            const tr2 = (1 / 5) * (a ** 5 - b ** 5);
-            term = (w / l ** 3) * (tr1 + tr2) * -1;
-          } else {
+          if (span === 0) {
             throw new Error(
               "The Highest Load position cannot be the same as the Lowest Load position for a VD Loading",
             );
           }
+
+          const lo = Math.min(a, b);
+          const hi = Math.max(a, b);
+
+          // Antiderivative of (x-a)·x·(l-x)²  [kernel for left/start FEM]
+          const FL = (x: number) =>
+            (-a * l ** 2 * x ** 2) / 2 +
+            ((l ** 2 + 2 * a * l) * x ** 3) / 3 -
+            ((2 * l + a) * x ** 4) / 4 +
+            x ** 5 / 5;
+
+          term = (w / (span * l ** 2)) * (FL(hi) - FL(lo));
         }
 
         // Kahan summation
@@ -261,7 +266,6 @@ export class FixedEndMoments {
         leftMoment = t;
       }
 
-      // console.log(startNode.id, "FEM LeftMoment: ", leftMoment);
       return leftMoment; // anticlockwise
     }
   }

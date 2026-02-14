@@ -15,15 +15,34 @@ import {
   Legend
 } from 'recharts';
 import { calculateDiagramData } from "@/utils/diagramUtils";
+import {
+  ForceUnit,
+  LengthUnit,
+  MomentUnit,
+  convertForce,
+  convertLength,
+  convertMoment,
+} from "@/utils/unitUtils";
+
+type ResultUnitPreference = {
+  force: ForceUnit;
+  length: LengthUnit;
+  moment: MomentUnit;
+};
 
 interface DiagramsSectionProps {
   members: Member[];
   solveResults: {
     endMoments: { span: string; left: number; right: number }[];
   } | null;
+  resultUnits: ResultUnitPreference;
 }
 
-export default function DiagramsSection({ members, solveResults }: DiagramsSectionProps) {
+export default function DiagramsSection({
+  members,
+  solveResults,
+  resultUnits,
+}: DiagramsSectionProps) {
 
   // Return null if no results
   if (!solveResults || !members.length) return null;
@@ -113,6 +132,13 @@ export default function DiagramsSection({ members, solveResults }: DiagramsSecti
     return combined;
   }, [allDiagramData]);
 
+  const displayLength = (value: number) =>
+    convertLength(value, "m", resultUnits.length);
+  const displayMoment = (value: number) =>
+    convertMoment(value, "kN*m", resultUnits.moment);
+  const displayForce = (value: number) =>
+    convertForce(value, "kN", resultUnits.force);
+
  
 console.log("COMBINED DATA: ", combinedData)
   return (
@@ -120,7 +146,9 @@ console.log("COMBINED DATA: ", combinedData)
       {/* Bending Moment Diagram (BMD) */}
       <div className="bg-white/[0.02] border border-white/5 p-6 rounded-2xl">
         <div className="flex items-center justify-between mb-6">
-          <h3 className="text-sm font-black uppercase tracking-widest text-[#d4d4d8]">Bending Moment Diagram (BMD)</h3>
+          <h3 className="text-sm font-black uppercase tracking-widest text-[#d4d4d8]">
+            Bending Moment Diagram (BMD) - {resultUnits.moment}
+          </h3>
           <div className="text-[10px] font-bold uppercase tracking-wider text-[#3b82f6]">Overall Span</div>
         </div>
 
@@ -132,19 +160,26 @@ console.log("COMBINED DATA: ", combinedData)
                 dataKey="x" 
                 stroke="#666" 
                 tick={{fill: '#666', fontSize: 10}}
-                tickFormatter={(val) => `${val.toFixed(1)}m`}
+                tickFormatter={(val) =>
+                  `${displayLength(Number(val)).toFixed(2)}${resultUnits.length}`
+                }
                 type="number"
                 domain={[0, 'auto']}
               />
               <YAxis 
                 stroke="#3b82f6" 
                 tick={{fill: '#3b82f6', fontSize: 10}}
-                label={{ value: 'Moment (kNm)', angle: -90, position: 'insideLeft', style: { fill: '#3b82f6', fontSize: 11 } }}
+                label={{ value: `Moment (${resultUnits.moment})`, angle: -90, position: 'insideLeft', style: { fill: '#3b82f6', fontSize: 11 } }}
+                tickFormatter={(val) => displayMoment(Number(val)).toFixed(2)}
               />
               <Tooltip 
                 contentStyle={{ backgroundColor: '#000', borderColor: '#333', borderRadius: '8px', fontSize: '10px' }}
-                formatter={(value: any) => Number(value).toFixed(2)}
-                labelFormatter={(label) => `Position: ${Number(label).toFixed(2)}m`}
+                formatter={(value: any) =>
+                  `${displayMoment(Number(value)).toFixed(2)} ${resultUnits.moment}`
+                }
+                labelFormatter={(label) =>
+                  `Position: ${displayLength(Number(label)).toFixed(2)} ${resultUnits.length}`
+                }
               />
               <ReferenceLine y={0} stroke="#444" strokeDasharray="3 3" />
               
@@ -166,7 +201,9 @@ console.log("COMBINED DATA: ", combinedData)
       {/* Shear Force Diagram (SFD) */}
       <div className="bg-white/[0.02] border border-white/5 p-6 rounded-2xl">
         <div className="flex items-center justify-between mb-6">
-          <h3 className="text-sm font-black uppercase tracking-widest text-[#d4d4d8]">Shear Force Diagram (SFD)</h3>
+          <h3 className="text-sm font-black uppercase tracking-widest text-[#d4d4d8]">
+            Shear Force Diagram (SFD) - {resultUnits.force}
+          </h3>
           <div className="text-[10px] font-bold uppercase tracking-wider text-[#10b981]">Overall Span</div>
         </div>
 
@@ -178,19 +215,26 @@ console.log("COMBINED DATA: ", combinedData)
                 dataKey="x" 
                 stroke="#666" 
                 tick={{fill: '#666', fontSize: 10}}
-                tickFormatter={(val) => `${val.toFixed(1)}m`}
+                tickFormatter={(val) =>
+                  `${displayLength(Number(val)).toFixed(2)}${resultUnits.length}`
+                }
                 type="number"
                 domain={[0, 'auto']}
               />
               <YAxis 
                 stroke="#10b981" 
                 tick={{fill: '#10b981', fontSize: 10}}
-                label={{ value: 'Shear (kN)', angle: -90, position: 'insideLeft', style: { fill: '#10b981', fontSize: 11 } }}
+                label={{ value: `Shear (${resultUnits.force})`, angle: -90, position: 'insideLeft', style: { fill: '#10b981', fontSize: 11 } }}
+                tickFormatter={(val) => displayForce(Number(val)).toFixed(2)}
               />
               <Tooltip 
                 contentStyle={{ backgroundColor: '#000', borderColor: '#333', borderRadius: '8px', fontSize: '10px' }}
-                formatter={(value: any) => Number(value).toFixed(2)}
-                labelFormatter={(label) => `Position: ${Number(label).toFixed(2)}m`}
+                formatter={(value: any) =>
+                  `${displayForce(Number(value)).toFixed(2)} ${resultUnits.force}`
+                }
+                labelFormatter={(label) =>
+                  `Position: ${displayLength(Number(label)).toFixed(2)} ${resultUnits.length}`
+                }
               />
               <ReferenceLine y={0} stroke="#444" strokeDasharray="3 3" />
               

@@ -2,6 +2,12 @@
 
 import React from "react";
 import { Member } from "./StructurePreview";
+import {
+  convertForce,
+  convertMoment,
+  ForceUnit,
+  MomentUnit,
+} from "@/utils/unitUtils";
 
 export interface DiagramDataPoint {
   x: number;
@@ -22,6 +28,7 @@ interface FrameDiagramOverlayProps {
   scaleY: (y: number) => number;
   scale: number;
   activeDiagram: 'bmd' | 'sfd' | 'both' | 'none';
+  diagramUnits: { momentUnit: MomentUnit; shearUnit: ForceUnit };
 }
 
 /**
@@ -34,7 +41,8 @@ export default function FrameDiagramOverlay({
   scaleX,
   scaleY,
   scale,
-  activeDiagram
+  activeDiagram,
+  diagramUnits,
 }: FrameDiagramOverlayProps) {
   if (activeDiagram === 'none' || !diagramData.length) return null;
 
@@ -225,9 +233,9 @@ export default function FrameDiagramOverlay({
                    <circle cx={label.x} cy={label.y} r={3} fill={color} stroke="white" strokeWidth={1} />
                 )}
                 
-                {label.type !== 'inflection' && (
-                    <g>
-                        <rect 
+	                {label.type !== 'inflection' && (
+	                    <g>
+	                        <rect 
                             x={label.x + perpX * 8 - 14} 
                             y={label.y + perpY * 8 - 9} 
                             width="28" 
@@ -235,19 +243,30 @@ export default function FrameDiagramOverlay({
                             rx="4" 
                             fill="rgba(0,0,0,0.7)" 
                         />
-                        <text
-                        x={label.x + perpX * 8}
-                        y={label.y + perpY * 8}
-                        fill="white"
-                        fontSize="9"
-                        fontWeight="bold"
-                        textAnchor="middle"
-                        dominantBaseline="middle"
-                        >
-                        {label.value.toFixed(1)}
-                        </text>
-                    </g>
-                )}
+	                        <text
+	                        x={label.x + perpX * 8}
+	                        y={label.y + perpY * 8}
+	                        fill="white"
+	                        fontSize="9"
+	                        fontWeight="bold"
+	                        textAnchor="middle"
+	                        dominantBaseline="middle"
+	                        >
+	                        {(dataKey === "moment"
+                            ? convertMoment(
+                                label.value,
+                                "kN*m",
+                                diagramUnits.momentUnit,
+                              )
+                            : convertForce(
+                                label.value,
+                                "kN",
+                                diagramUnits.shearUnit,
+                              )
+                          ).toFixed(1)}
+	                        </text>
+	                    </g>
+	                )}
              </g>
           ))}
         </g>
