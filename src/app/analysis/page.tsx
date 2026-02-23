@@ -619,9 +619,9 @@ export default function AnalysisContent() {
           const m1 = moments[`MOMENT${m.startNode.id}${m.endNode.id}`] || 0;
           const m2 = moments[`MOMENT${m.endNode.id}${m.startNode.id}`] || 0;
 
-          endMoments.push({ span: `Support ${i + 1}`, left: m1, right: m2 });
+          endMoments.push({ span: `Member ${i + 1}`, left: m1, right: m2 });
 
-          reportText += `Support ${i + 1}:\n`;
+          reportText += `Member ${i + 1}:\n`;
           reportText += `     Left Moment: ${m1.toFixed(2)}\n`;
           reportText += `     Right Moment: ${m2.toFixed(2)}\n`;
         });
