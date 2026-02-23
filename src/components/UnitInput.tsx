@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   LengthUnit,
   ForceUnit,
@@ -59,31 +59,37 @@ export default function UnitInput({
   constantValue = 1,
 }: UnitInputProps) {
   // Determine available units based on type
-  const units =
-    unitType === "length"
-      ? Object.keys(LENGTH_UNITS)
-      : unitType === "force"
-        ? Object.keys(FORCE_UNITS)
-        : unitType === "loading"
-          ? Object.keys(LOADING_UNITS)
-          : unitType === "moment"
-            ? Object.keys(MOMENT_UNITS)
-            : unitType === "elasticModulus"
-              ? Object.keys(ELASTIC_MODULUS_UNITS)
-              : Object.keys(INERTIA_UNITS);
+  const units = useMemo(
+    () =>
+      unitType === "length"
+        ? Object.keys(LENGTH_UNITS)
+        : unitType === "force"
+          ? Object.keys(FORCE_UNITS)
+          : unitType === "loading"
+            ? Object.keys(LOADING_UNITS)
+            : unitType === "moment"
+              ? Object.keys(MOMENT_UNITS)
+              : unitType === "elasticModulus"
+                ? Object.keys(ELASTIC_MODULUS_UNITS)
+                : Object.keys(INERTIA_UNITS),
+    [unitType],
+  );
 
-  const unitDefault =
-    unitType === "length"
-      ? "m"
-      : unitType === "force"
-        ? "kN"
-        : unitType === "loading"
-          ? "kN/m"
-          : unitType === "moment"
-            ? "kN*m"
-            : unitType === "elasticModulus"
-              ? "GPa"
-              : "m^4";
+  const unitDefault = useMemo(
+    () =>
+      unitType === "length"
+        ? "m"
+        : unitType === "force"
+          ? "kN"
+          : unitType === "loading"
+            ? "kN/m"
+            : unitType === "moment"
+              ? "kN*m"
+              : unitType === "elasticModulus"
+                ? "GPa"
+                : "m^4",
+    [unitType],
+  );
 
   const [currentUnit, setCurrentUnit] = useState<string>(
     preferredUnit && units.includes(preferredUnit) ? preferredUnit : unitDefault,
