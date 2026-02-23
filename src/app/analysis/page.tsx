@@ -6,7 +6,10 @@ import MemberForm from "@/components/MemberForm";
 import Modal from "@/components/Modal";
 import Link from "next/link";
 import StructurePreview, { Member } from "@/components/StructurePreview";
-import { BeamSolver } from "@_lib/beamSolver/beamSolver";
+import {
+  BeamInternalForcePoint,
+  BeamSolver,
+} from "@_lib/beamSolver/beamSolver";
 import { FrameSolver } from "@_lib/frameSolver/frameSolver";
 import { Node as SolverNode } from "@_lib/elements/node";
 import { Beam, Column, InclinedMember } from "@_lib/elements/member";
@@ -44,7 +47,18 @@ type ResultUnitPreference = {
   moment: MomentUnit;
 };
 
-function AnalysisContent() {
+type SolveReaction = { id: string; x?: number; y: number; m?: number };
+type BeamMemberDiagram = { span: string; data: BeamInternalForcePoint[] };
+type FrontJointAction = NonNullable<Member["jointActions"]>["start"];
+type SolveResults = {
+  fems: { span: string; start: number; end: number }[];
+  endMoments: { span: string; left: number; right: number }[];
+  reactions: SolveReaction[];
+  frameSidesway: boolean | null;
+  beamDiagrams: BeamMemberDiagram[];
+};
+
+export default function AnalysisContent() {
   const searchParams = useSearchParams();
   const mode = searchParams.get("type") || "beams";
   const isFrameMode = mode === "frames";
@@ -56,11 +70,7 @@ function AnalysisContent() {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [solveData, setSolveData] = useState<string>("");
-  const [solveResults, setSolveResults] = useState<{
-    fems: { span: string; start: number; end: number }[];
-    endMoments: { span: string; left: number; right: number }[];
-    reactions: { id: string; x?: number; y: number }[];
-  } | null>(null);
+  const [solveResults, setSolveResults] = useState<SolveResults | null>(null);
   const [activeDiagram, setActiveDiagram] = useState<
     "bmd" | "sfd" | "both" | "none"
   >("none");
@@ -77,6 +87,13 @@ function AnalysisContent() {
   // Compute diagram data for overlay when solve results are available
   const diagramData: MemberDiagramData[] = useMemo(() => {
     if (!solveResults || !members.length) return [];
+    if (!isFrameMode && solveResults.beamDiagrams.length) {
+      return solveResults.beamDiagrams.map((entry, index) => ({
+        memberIndex: index,
+        data: entry.data,
+      }));
+    }
+
     return members.map((member, index) => {
       const moments = solveResults.endMoments[index];
       const data = calculateDiagramData(member, {
@@ -85,7 +102,7 @@ function AnalysisContent() {
       });
       return { memberIndex: index, data };
     });
-  }, [members, solveResults]);
+  }, [isFrameMode, members, solveResults]);
 
   const handleCreateMember = (data: any) => {
     if (editingIndex !== null) {
@@ -132,28 +149,143 @@ function AnalysisContent() {
     });
   }, [members]);
 
-  const nodeSupports = useMemo(() => {
+  const supportResolution = useMemo(() => {
     const supports: Record<string, { type: string; settlement: number }> = {};
-    members.forEach((m) => {
+    const conflicts: string[] = [];
+    const tol = 1e-9;
+
+    const register = (
+      key: string,
+      nodeLabel: string,
+      type: string,
+      settlement: number,
+      memberIndex: number,
+    ) => {
+      const existing = supports[key];
+      if (!existing) {
+        supports[key] = { type, settlement };
+        return;
+      }
+      if (
+        existing.type !== type ||
+        Math.abs(existing.settlement - settlement) > tol
+      ) {
+        conflicts.push(
+          `${nodeLabel}: member ${memberIndex + 1} has ${type} (settlement=${settlement}), existing is ${existing.type} (settlement=${existing.settlement})`,
+        );
+      }
+    };
+
+    members.forEach((m, memberIndex) => {
       const sKey = JSON.stringify(m.startNode);
       const eKey = JSON.stringify(m.endNode);
+      const sSettlement = m.includeSettlements
+        ? m.supports.startSettlement || 0
+        : 0;
+      const eSettlement = m.includeSettlements
+        ? m.supports.endSettlement || 0
+        : 0;
 
       if (m.supports.start !== "None") {
-        supports[sKey] = {
-          type: m.supports.start,
-          settlement: m.includeSettlements
-            ? m.supports.startSettlement || 0
-            : 0,
-        };
+        register(
+          sKey,
+          `(${m.startNode.x}, ${m.startNode.y})`,
+          m.supports.start,
+          sSettlement,
+          memberIndex,
+        );
       }
       if (m.supports.end !== "None") {
-        supports[eKey] = {
-          type: m.supports.end,
-          settlement: m.includeSettlements ? m.supports.endSettlement || 0 : 0,
-        };
+        register(
+          eKey,
+          `(${m.endNode.x}, ${m.endNode.y})`,
+          m.supports.end,
+          eSettlement,
+          memberIndex,
+        );
       }
     });
-    return supports;
+
+    return { supports, conflicts };
+  }, [members]);
+
+  const nodeSupports = supportResolution.supports;
+
+  const jointActionResolution = useMemo(() => {
+    const actions: Record<
+      string,
+      {
+        fx: number;
+        fy: number;
+        mz: number;
+        imposedDx: number;
+        imposedDy: number;
+      }
+    > = {};
+    const conflicts: string[] = [];
+    const tol = 1e-9;
+
+    const register = (
+      key: string,
+      nodeLabel: string,
+      joint: FrontJointAction | undefined,
+      memberIndex: number,
+    ) => {
+      const j = joint || {};
+      const fx = Number(j.fx ?? 0);
+      const fy = Number(j.fy ?? 0);
+      const mz = Number(j.mz ?? 0);
+      const imposedDx = Number(j.imposedDx ?? 0);
+      const imposedDy = Number(j.imposedDy ?? 0);
+
+      if (!actions[key]) {
+        actions[key] = { fx: 0, fy: 0, mz: 0, imposedDx: 0, imposedDy: 0 };
+      }
+
+      actions[key].fx += fx;
+      actions[key].fy += fy;
+      actions[key].mz += mz;
+
+      const mergeImposed = (axis: "imposedDx" | "imposedDy") => {
+        const incoming = axis === "imposedDx" ? imposedDx : imposedDy;
+        const existing = actions[key][axis];
+
+        if (Math.abs(existing) <= tol) {
+          actions[key][axis] = incoming;
+          return;
+        }
+        if (Math.abs(incoming) <= tol) {
+          return;
+        }
+        if (Math.abs(existing - incoming) > tol) {
+          conflicts.push(
+            `${nodeLabel}: conflicting ${axis} at member ${memberIndex + 1} (existing=${existing}, incoming=${incoming})`,
+          );
+        }
+      };
+
+      mergeImposed("imposedDx");
+      mergeImposed("imposedDy");
+    };
+
+    members.forEach((m, memberIndex) => {
+      const sKey = JSON.stringify(m.startNode);
+      const eKey = JSON.stringify(m.endNode);
+      register(
+        sKey,
+        `(${m.startNode.x}, ${m.startNode.y})`,
+        m.jointActions?.start,
+        memberIndex,
+      );
+      register(
+        eKey,
+        `(${m.endNode.x}, ${m.endNode.y})`,
+        m.jointActions?.end,
+        memberIndex,
+      );
+    });
+
+    return { actions, conflicts };
   }, [members]);
 
   const toDisplayForce = (value: number) =>
@@ -178,6 +310,9 @@ function AnalysisContent() {
     reportText += `  Force: ${resultUnits.force}\n`;
     reportText += `  Moment: ${resultUnits.moment}\n`;
     reportText += `  Length: ${resultUnits.length}\n\n`;
+    if (solveResults.frameSidesway !== null) {
+      reportText += `  Frame Sidesway: ${solveResults.frameSidesway ? "Present" : "Absent"}\n\n`;
+    }
 
     reportText += "The Fixed End Moments for the model is given below:\n";
     solveResults.fems.forEach((f) => {
@@ -200,6 +335,9 @@ function AnalysisContent() {
         reportText += `     X-reaction: ${toDisplayForce(r.x).toFixed(2)} ${resultUnits.force}\n`;
       }
       reportText += `     Y-reaction: ${toDisplayForce(r.y).toFixed(2)} ${resultUnits.force}\n`;
+      if (r.m !== undefined) {
+        reportText += `     M-reaction: ${toDisplayMoment(r.m).toFixed(2)} ${resultUnits.moment}\n`;
+      }
     });
 
     return reportText;
@@ -207,6 +345,25 @@ function AnalysisContent() {
 
   const handleSolve = () => {
     try {
+      if (supportResolution.conflicts.length) {
+        throw new Error(
+          `Conflicting support assignments detected:\n${supportResolution.conflicts.join("\n")}`,
+        );
+      }
+      if (jointActionResolution.conflicts.length) {
+        throw new Error(
+          `Conflicting imposed joint displacements detected:\n${jointActionResolution.conflicts.join("\n")}`,
+        );
+      }
+      if (
+        isFrameMode &&
+        members.some((m) => (m.memberType || "Beam") === "Inclined")
+      ) {
+        throw new Error(
+          "Inclined members are currently unsupported in frame mode. Use Beam/Column only.",
+        );
+      }
+
       // 1. Map frontend nodes to SolverNode instances
       const solverNodesMap = new Map<string, SolverNode>();
       let lastSupport: SolverSupport | null = null;
@@ -235,6 +392,24 @@ function AnalysisContent() {
           n.y,
           support as any,
         );
+
+        const nodeJointAction = jointActionResolution.actions[nKey];
+        if (nodeJointAction) {
+          if (nodeJointAction.fx || nodeJointAction.fy) {
+            // Global nodal loads: +Fx right, +Fy upward.
+            solverNode.addNodalLoad(nodeJointAction.fx, nodeJointAction.fy);
+          }
+          if (nodeJointAction.mz) {
+            // Positive nodal moment is anti-clockwise.
+            solverNode.addMomentLoad(nodeJointAction.mz);
+          }
+          if (nodeJointAction.imposedDx || nodeJointAction.imposedDy) {
+            solverNode.addImposedDisplacement(
+              nodeJointAction.imposedDx,
+              nodeJointAction.imposedDy,
+            );
+          }
+        }
         solverNodesMap.set(nKey, solverNode);
       });
 
@@ -253,6 +428,8 @@ function AnalysisContent() {
           const slabThickness = useDesignGeometry
             ? Number(m.slabThickness ?? 0)
             : 0;
+          const memberE = Number(m.Ecoef ?? 1);
+          const memberI = Number(m.Icoef ?? 1);
           let member: Beam | Column | InclinedMember;
 
           if (type === "Column") {
@@ -262,19 +439,23 @@ function AnalysisContent() {
               endSolverNode,
               memberB,
               memberH,
-              m.Ecoef,
-              m.Icoef,
+              memberE,
+              memberI,
             );
           } else if (type === "Beam") {
+            const beamSectionType =
+              m.beamSectionType === "L" || m.beamSectionType === "T"
+                ? m.beamSectionType
+                : null;
             // Beam(start, end, b, h, type=null, E, I, slabThickness)
             member = new Beam(
               startSolverNode,
               endSolverNode,
               memberB,
               memberH,
-              null,
-              m.Ecoef,
-              m.Icoef,
+              beamSectionType,
+              memberE,
+              memberI,
               slabThickness,
             );
           } else {
@@ -284,29 +465,96 @@ function AnalysisContent() {
               endSolverNode,
               memberB,
               memberH,
-              m.Ecoef,
-              m.Icoef,
+              memberE,
+              memberI,
             );
           }
+
+          const memberAngle = Math.atan2(
+            endSolverNode.y - startSolverNode.y,
+            endSolverNode.x - startSolverNode.x,
+          );
+          const toGlobalComponents = (
+            magnitude: number,
+            angleDeg: number | undefined,
+          ) => {
+            const angleRad = ((angleDeg ?? 90) * Math.PI) / 180;
+            const fx = magnitude * Math.cos(angleRad);
+            // Upward force is positive in global coordinates.
+            // UI angle uses screen convention where +90deg points downward.
+            const fy = -magnitude * Math.sin(angleRad);
+            return { fx, fy };
+          };
+
+          const toLocalComponents = (
+            magnitude: number,
+            angleDeg: number | undefined,
+          ) => {
+            const { fx, fy } = toGlobalComponents(magnitude, angleDeg);
+            const transverse =
+              fx * Math.sin(memberAngle) - fy * Math.cos(memberAngle);
+            const axial =
+              fx * Math.cos(memberAngle) + fy * Math.sin(memberAngle);
+            return { transverse, axial };
+          };
+
+          const distributeAxialEquivalentToNodes = (
+            axialResultant: number,
+            localPositionFromStart: number,
+          ) => {
+            if (Math.abs(axialResultant) < 1e-12) return;
+
+            const L = member.length || 1;
+            const position = Math.max(0, Math.min(localPositionFromStart, L));
+
+            const startShare = axialResultant * (1 - position / L);
+            const endShare = axialResultant * (position / L);
+
+            const startFx = startShare * Math.cos(memberAngle);
+            const startFy = startShare * Math.sin(memberAngle);
+            const endFx = endShare * Math.cos(memberAngle);
+            const endFy = endShare * Math.sin(memberAngle);
+
+            // External nodal loads: +Fx right, +Fy upward.
+            startSolverNode.addNodalLoad(startFx, startFy);
+            endSolverNode.addNodalLoad(endFx, endFy);
+          };
 
           // Add loads
           m.loads.forEach((l) => {
             if (l.type === "Point") {
-              member.addLoad(new SolverPointLoad(l.position || 0, l.value));
+              const magnitude = Number(l.value || 0);
+              const local = toLocalComponents(magnitude, l.angle);
+              const position = Number(l.position || 0);
+              member.addLoad(new SolverPointLoad(position, local.transverse));
+              distributeAxialEquivalentToNodes(local.axial, position);
             } else if (l.type === "UDL") {
+              const magnitudePerLength = Number(l.value || 0);
+              const local = toLocalComponents(magnitudePerLength, l.angle);
+              const startPosition = Number(l.position || 0);
+              const span = Number(l.span || 0);
               // Correct mapping: l.span is already the length of the UDL
               member.addLoad(
-                new SolverUDL(l.position || 0, l.span || 0, l.value),
+                new SolverUDL(startPosition, span, local.transverse),
+              );
+              distributeAxialEquivalentToNodes(
+                local.axial * span,
+                startPosition + span / 2,
               );
             } else if (l.type === "VDL") {
+              const highMagnitude = Number(l.highValue ?? l.value ?? 0);
+              const local = toLocalComponents(highMagnitude, l.angle);
+              const highPosition = Number(l.highPosition || 0);
+              const lowPosition = Number(l.lowPosition || 0);
               member.addLoad(
-                new SolverVDL(
-                  Number(l.highValue || 0),
-                  Number(l.highPosition || 0),
-                  0,
-                  Number(l.lowPosition || 0),
-                ),
+                new SolverVDL(local.transverse, highPosition, 0, lowPosition),
               );
+
+              const span = Math.abs(highPosition - lowPosition);
+              const axialResultant = (local.axial * span) / 2;
+              const resultantPos =
+                lowPosition + (2 / 3) * (highPosition - lowPosition);
+              distributeAxialEquivalentToNodes(axialResultant, resultantPos);
             }
           });
 
@@ -314,12 +562,13 @@ function AnalysisContent() {
         },
       );
 
-      console.log("Solver Input (Members):", solverMembers);
-
       // 3. Execute Solver
       let resultsData: any = {};
+      let frameSidesway: boolean | null = null;
+      let beamDiagrams: BeamMemberDiagram[] = [];
       if (isFrameMode) {
         const solver = new FrameSolver(solverMembers as any);
+        frameSidesway = solver.isSideSway();
         resultsData = {
           moments: solver.updatedGetFinalMoments(),
           reactions: Object.fromEntries(solver.updatedSolveReactions()),
@@ -330,6 +579,12 @@ function AnalysisContent() {
           moments: solver.updatedGetFinalMoments(),
           reactions: solver.updatedGetSupportReactions(),
         };
+        beamDiagrams = solver
+          .getAllBeamInternalForceData(0.05)
+          .map((entry, index) => ({
+            span: `Span ${index + 1}`,
+            data: entry.data,
+          }));
       }
 
       // 4. Generate Formatted Report
@@ -337,7 +592,13 @@ function AnalysisContent() {
       let reportText = "The Fixed End Moments for the model is given below:\n";
       const fems: { span: string; start: number; end: number }[] = [];
       const endMoments: { span: string; left: number; right: number }[] = [];
-      const reactions: { id: string; x?: number; y: number }[] = [];
+      const reactions: SolveReaction[] = [];
+
+      if (frameSidesway !== null) {
+        reportText += frameSidesway
+          ? "\nFrame Sidesway Status: SWAY PRESENT\n\n"
+          : "\nFrame Sidesway Status: NO SWAY (BRACED)\n\n";
+      }
 
       solverMembers.forEach((m, i) => {
         const spanId = `M${i + 1}`;
@@ -366,17 +627,17 @@ function AnalysisContent() {
         });
       } else {
         const moments = resultsData.moments as {
+          nodeId: string;
           leftMoment: number;
           rightMoment: number;
         }[];
+        const momentsByNode = new Map(moments.map((m) => [m.nodeId, m]));
         solverMembers.forEach((m, i) => {
-          // moments array corresponds to Nodes [0..N]
-          // Member i connects Node i to Node i+1
-          const startNodeMoments = moments[i];
-          const endNodeMoments = moments[i + 1];
+          const startNodeMoments = momentsByNode.get(m.startNode.id);
+          const endNodeMoments = momentsByNode.get(m.endNode.id);
 
-          // Slope Deflection convention: Clockwise is positive.
-          // M_SD_left is m1, M_SD_right is m2.
+          // Slope-deflection convention used here:
+          // anti-clockwise moment is positive.
           const m1 = startNodeMoments?.rightMoment || 0;
           const m2 = endNodeMoments?.leftMoment || 0;
 
@@ -393,26 +654,42 @@ function AnalysisContent() {
         ([id, r]) => {
           let x: number | undefined = undefined;
           let y: number = 0;
+          let m: number | undefined = undefined;
 
           if (r && typeof r === "object") {
-            const xVal = Number(r.xReaction) || 0;
-            const yVal = Number(r.yReaction) || 0;
+            const hasX = r.xReaction !== undefined;
+            const hasY = r.yReaction !== undefined;
+            const hasM = r.momentReaction !== undefined;
+
+            const xVal = hasX ? Number(r.xReaction) || 0 : undefined;
+            const yVal = hasY ? Number(r.yReaction) || 0 : 0;
+            const mVal = hasM ? Number(r.momentReaction) || 0 : undefined;
+
             x = xVal;
             y = yVal;
+            m = mVal;
+
             reportText += `${id}:\n`;
-            reportText += `     X-reaction: ${xVal.toFixed(2)}\n`;
+            if (xVal !== undefined) {
+              reportText += `     X-reaction: ${xVal.toFixed(2)}\n`;
+            }
             reportText += `     Y-reaction: ${yVal.toFixed(2)}\n`;
-          } else {
-            y = Number(r) || 0;
-            reportText += `${id}:\n`;
-            reportText += `     Y-reaction: ${y.toFixed(2)}\n`;
+            if (mVal !== undefined) {
+              reportText += `     M-reaction: ${mVal.toFixed(2)}\n`;
+            }
           }
 
-          reactions.push({ id, x, y });
+          reactions.push({ id, x, y, m });
         },
       );
 
-      setSolveResults({ fems, endMoments, reactions });
+      setSolveResults({
+        fems,
+        endMoments,
+        reactions,
+        frameSidesway,
+        beamDiagrams,
+      });
       setSolveData(reportText);
       setActiveModal("solve");
     } catch (error: any) {
@@ -460,21 +737,10 @@ function AnalysisContent() {
         <div className="flex items-center gap-4">
           <Link
             href="/settings"
-            className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-gray-300 transition-colors hover:text-white hover:bg-white/10"
+            className="rounded-full border border-white/15 bg-white/5 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-gray-300 transition-colors hover:text-white hover:bg-white/10"
           >
             Settings
           </Link>
-
-          <div className="hidden lg:flex items-center gap-4 mr-4 text-[10px] uppercase tracking-widest text-gray-500 font-bold border-r border-white/10 pr-6">
-            <div className="flex flex-col items-end">
-              <span>Memory</span>
-              <span className="text-white">Optimal</span>
-            </div>
-            <div className="flex flex-col items-end">
-              <span>GPU Acceleration</span>
-              <span className="text-[var(--primary)]">Enabled</span>
-            </div>
-          </div>
 
           <button
             onClick={handleSolve}
@@ -492,7 +758,7 @@ function AnalysisContent() {
         >
           <div className="p-5 flex items-center justify-between border-b border-white/10 bg-white/5">
             <h2 className="font-semibold text-gray-300 uppercase tracking-widest text-[10px]">
-              Structural Tree
+              Structural Members
             </h2>
             <button
               onClick={() => setIsSidebarOpen(false)}
@@ -732,11 +998,11 @@ function AnalysisContent() {
                 </svg>
               </div>
               <h3 className="text-4xl font-black text-gray-200 tracking-tighter mb-4">
-                ENGINE OFFLINE
+                SOLVER ENGINE
               </h3>
               <p className="text-gray-500 max-w-sm text-center text-sm font-medium leading-relaxed px-12">
-                Initialize the structural matrix by defining your first beam
-                member and node coordinates.
+                Initialize the engine by defining your first beam member and
+                node coordinates.
               </p>
             </div>
           )}
@@ -770,16 +1036,6 @@ function AnalysisContent() {
                 </div>
               </div>
             </div>
-
-            <div className="flex flex-col items-end gap-3 translate-y-2">
-              <div className="flex items-center gap-2 text-[10px] font-black uppercase text-gray-600 tracking-[0.2em]">
-                <span className="animate-pulse">Real-time Computation</span>
-                <div className="w-1 h-1 rounded-full bg-green-500"></div>
-              </div>
-              <div className="h-0.5 w-64 bg-white/5 overflow-hidden rounded-full">
-                <div className="h-full bg-[var(--primary)] w-3/4 shadow-[0_0_10px_var(--primary)]"></div>
-              </div>
-            </div>
           </div>
         </main>
       </div>
@@ -811,6 +1067,19 @@ function AnalysisContent() {
               <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mt-1">
                 Detailed Structural Schema Export
               </p>
+              {solveResults?.frameSidesway !== null && (
+                <p
+                  className={`mt-2 inline-flex rounded-lg border px-2 py-1 text-[9px] font-black uppercase tracking-widest ${
+                    solveResults?.frameSidesway
+                      ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                      : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                  }`}
+                >
+                  {solveResults?.frameSidesway
+                    ? "Sidesway Present"
+                    : "No Sidesway (Braced)"}
+                </p>
+              )}
             </div>
             <div className="flex flex-col gap-3 lg:items-end">
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-white/[0.02] border border-white/10 rounded-xl p-2">
@@ -1053,6 +1322,19 @@ function AnalysisContent() {
                               </span>
                             </span>
                           </div>
+                          {r.m !== undefined && (
+                            <div className="flex items-end justify-between border-t border-white/5 pt-2">
+                              <span className="text-[8px] font-bold text-gray-600 uppercase">
+                                M - Reaction
+                              </span>
+                              <span className="text-lg font-black text-blue-400 tabular-nums">
+                                {toDisplayMoment(r.m).toFixed(2)}{" "}
+                                <span className="text-[10px] text-gray-500 font-medium">
+                                  {resultUnits.moment}
+                                </span>
+                              </span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -1141,8 +1423,7 @@ function AnalysisContent() {
                 </section>
               ) : (
                 <DiagramsSection
-                  members={members}
-                  solveResults={solveResults}
+                  beamDiagrams={solveResults?.beamDiagrams || []}
                   resultUnits={resultUnits}
                 />
               ))}
@@ -1162,24 +1443,5 @@ function AnalysisContent() {
         <div className="absolute top-[40%] -right-[10%] w-[40%] h-[50%] bg-[var(--accent)] rounded-full blur-[180px] opacity-20"></div>
       </div>
     </div>
-  );
-}
-
-export default function AnalysisPage() {
-  return (
-    <Suspense
-      fallback={
-        <div className="h-screen w-screen bg-[#050505] flex items-center justify-center">
-          <div className="flex flex-col items-center gap-6">
-            <div className="w-16 h-16 border-4 border-white/5 border-t-[var(--primary)] rounded-full animate-spin shadow-[0_0_20px_var(--primary-glow)]"></div>
-            <p className="text-[10px] font-black uppercase tracking-[0.4em] text-gray-400 animate-pulse">
-              Syncing Structural Kernel
-            </p>
-          </div>
-        </div>
-      }
-    >
-      <AnalysisContent />
-    </Suspense>
   );
 }

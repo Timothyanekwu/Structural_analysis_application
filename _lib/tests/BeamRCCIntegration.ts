@@ -42,7 +42,7 @@ const momentResults = solver.getMaxMomentPerSpan(0.1);
 console.log("Moment Results per Span:");
 momentResults.forEach((res) => {
   console.log(
-    `${res.beam}: Max Sagging = ${res.maxSagging.toFixed(2)} kNm, Max Hogging = ${res.maxHogging.toFixed(2)} kNm`,
+    `${res.beam}: Max +M = ${res.maxPositiveMoment.toFixed(2)} kNm, Max -M = ${res.maxNegativeMoment.toFixed(2)} kNm`,
   );
 });
 
@@ -69,7 +69,7 @@ momentResults.forEach((res, index) => {
 
   // Pick the critical moment (max absolute value) or design for both regions
   // Let's design for max sagging (Mid-span)
-  const M_sagging = res.maxSagging;
+  const M_sagging = Math.max(0, res.maxPositiveMoment);
 
   const beams = solver.beams;
   const currentBeam = beams[index];

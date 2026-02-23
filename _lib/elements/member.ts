@@ -84,17 +84,16 @@ export class Beam extends Member {
     h = 1,
     type: "L" | "T" | null = null,
     Ecoef = 1,
-    Icoef?: number,
+    Icoef = 1,
     slabThickness = 0,
   ) {
-    // Use user-provided inertia when supplied; otherwise derive from section dimensions.
-    const shouldDeriveI =
-      Icoef === undefined || Icoef === null || Number(Icoef) <= 0;
+    // If caller passes explicit Icoef (!= 1 default), keep it.
+    // Otherwise derive from section dimensions.
     const calculatedIcoef =
-      b > 0 && h > 0 && shouldDeriveI
+      b > 0 && h > 0 && Icoef === 1
         ? SectionUtils.momentOfInertia(b, h, slabThickness)
-        : Number(Icoef);
-    super(startNode, endNode, b, h, Ecoef, calculatedIcoef || 1);
+        : Icoef;
+    super(startNode, endNode, b, h, Ecoef, calculatedIcoef);
     this.type = type;
     // this.leftSupport = leftSupport;
     // this.rightSupport = rightSupport;
@@ -118,15 +117,13 @@ export class Column extends Member {
     b = 1,
     h = 1,
     Ecoef = 1,
-    Icoef?: number,
+    Icoef = 1,
   ) {
-    const shouldDeriveI =
-      Icoef === undefined || Icoef === null || Number(Icoef) <= 0;
     const calculatedIcoef =
-      b > 0 && h > 0 && shouldDeriveI
+      b > 0 && h > 0 && Icoef === 1
         ? SectionUtils.momentOfInertia(b, h)
-        : Number(Icoef);
-    super(startNode, endNode, b, h, Ecoef, calculatedIcoef || 1);
+        : Icoef;
+    super(startNode, endNode, b, h, Ecoef, calculatedIcoef);
 
     if (this.startNode.x !== this.endNode.x) {
       throw new Error(
@@ -147,15 +144,13 @@ export class InclinedMember extends Member {
     b = 1,
     h = 1,
     Ecoef = 1,
-    Icoef?: number,
+    Icoef = 1,
   ) {
-    const shouldDeriveI =
-      Icoef === undefined || Icoef === null || Number(Icoef) <= 0;
     const calculatedIcoef =
-      b > 0 && h > 0 && shouldDeriveI
+      b > 0 && h > 0 && Icoef === 1
         ? SectionUtils.momentOfInertia(b, h)
-        : Number(Icoef);
-    super(startNode, endNode, b, h, Ecoef, calculatedIcoef || 1);
+        : Icoef;
+    super(startNode, endNode, b, h, Ecoef, calculatedIcoef);
     if (
       Math.abs(this.angle) < 0.01 ||
       Math.abs(Math.abs(this.angle) - Math.PI / 2) < 0.01

@@ -7,7 +7,6 @@ export const fmtNo = (number: number) => {
     return 0;
   }
   no = Number(no.toFixed(2));
-  console.log(no, "in fmt fnc");
   return no;
 };
 

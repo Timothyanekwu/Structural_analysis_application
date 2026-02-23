@@ -1,5 +1,3 @@
-// output.ts
-
 import { Beam, Column, InclinedMember } from "../elements/member";
 import {
   FixedSupport,
@@ -9,20 +7,31 @@ import {
 import { FixedEndMoments } from "../logic/FEMs";
 import { SlopeDeflection } from "./slopeDeflectionEqn";
 import { Equation } from "../logic/simultaneousEqn";
-import { PointLoad, UDL, VDL } from "../elements/load";
 import { Node } from "../elements/node";
 
-// --- CONSTANTS ---
-const supportB = new FixedSupport(16, 0);
-const supportC = new FixedSupport(28, 0);
+export type BeamNodeMoment = {
+  nodeId: string;
+  leftMoment: number;
+  rightMoment: number;
+};
 
-const nodeB = new Node("B", supportB.x, 0, supportB);
-const nodeC = new Node("C", supportC.x, 0, supportC);
+export type BeamSupportReaction = {
+  xReaction: number;
+  yReaction: number;
+  momentReaction: number;
+};
 
-const BC = new Beam(nodeB, nodeC);
+export type BeamInternalForcePoint = {
+  x: number;
+  shear: number;
+  moment: number;
+  axial: number;
+};
 
-BC.addLoad(new UDL(0, 12, 3));
-// BC.addLoad(new VDL(24, 4, 0, 8));
+type MemberEndReactions = {
+  leftReaction: number;
+  rightReaction: number;
+};
 
 export class BeamSolver {
   beams: Beam[];
@@ -36,6 +45,7 @@ export class BeamSolver {
     this.slopeDeflection = new SlopeDeflection();
     this.equation = new Equation();
   }
+
   get nodes(): Node[] {
     return [...new Set(this.beams.flatMap((b) => [b.startNode, b.endNode]))];
   }
@@ -54,9 +64,9 @@ export class BeamSolver {
   }
 
   updatedGetSupportMoments() {
-    return this.nodes.map((node) => {
-      return this.slopeDeflection.updatedSupportEquation(node);
-    });
+    return this.nodes.map((node) =>
+      this.slopeDeflection.updatedSupportEquation(node),
+    );
   }
 
   /** Solve simultaneous equations for non-fixed supports */
@@ -66,229 +76,253 @@ export class BeamSolver {
       .map((s) => this.slopeDeflection.updatedGetEquations(s));
   }
 
-  /** Solve for final moments at supports */
-  updatedGetFinalMoments() {
+  private momentResultMap(values: BeamNodeMoment[]) {
+    return new Map(values.map((v) => [v.nodeId, v]));
+  }
+
+  /** Solve for final moments at nodes (anti-clockwise positive). */
+  updatedGetFinalMoments(): BeamNodeMoment[] {
     const supportMoments = this.updatedGetSupportMoments();
     const equations = this.updatedGetEquations();
-    const simulEqnSoln = this.equation.solveEquations(equations, {
+    const simSoln = this.equation.solveEquations(equations, {
       allowLeastSquares: true,
     });
 
-    console.dir(supportMoments, { depth: Infinity });
+    return supportMoments.map((supportEqn, index) => {
+      const node = this.nodes[index];
 
-    const momentValues = supportMoments.map((supportEqn, index) => {
       const leftMomentTerms = Object.values(supportEqn.clk).flat();
-      const leftMomentValue = leftMomentTerms.reduce((acc, term) => {
+      const leftMoment = leftMomentTerms.reduce((acc, term) => {
         const key = term.name === "EIdeta" ? "c" : term.name;
-        const value = key === "c" ? 1 : (simulEqnSoln[key] ?? 0);
+        const value = key === "c" ? 1 : (simSoln[key] ?? 0);
         return acc + term.coefficient * value;
       }, 0);
 
       const rightMomentTerms = Object.values(supportEqn.antiClk).flat();
-      const rightMomentValue = rightMomentTerms.reduce((acc, term) => {
+      const rightMoment = rightMomentTerms.reduce((acc, term) => {
         const key = term.name === "EIdeta" ? "c" : term.name;
-        const value = key === "c" ? 1 : (simulEqnSoln[key] ?? 0);
+        const value = key === "c" ? 1 : (simSoln[key] ?? 0);
         return acc + term.coefficient * value;
       }, 0);
 
-      // assign the left and right moments for each supports here
-      const supports = this.getSupports();
-      const support = supports[index];
-      if (support) {
-        support.leftMoment = leftMomentValue;
-        support.rightMoment = rightMomentValue;
+      if (node.support) {
+        node.support.leftMoment = leftMoment;
+        node.support.rightMoment = rightMoment;
       }
 
-      return { leftMoment: leftMomentValue, rightMoment: rightMomentValue };
+      return { nodeId: node.id, leftMoment, rightMoment };
     });
-
-    return momentValues;
   }
 
-  updatedSolveReactions(member: Beam | Column | InclinedMember) {
+  private getMemberEndMoments(
+    member: Beam | Column | InclinedMember,
+    momentsByNode: Map<string, BeamNodeMoment>,
+  ) {
+    const startMoments = momentsByNode.get(member.startNode.id);
+    const endMoments = momentsByNode.get(member.endNode.id);
+    return {
+      leftMoment: startMoments?.rightMoment ?? 0,
+      rightMoment: endMoments?.leftMoment ?? 0,
+    };
+  }
+
+  private memberEndReactions(
+    member: Beam | Column | InclinedMember,
+    momentsByNode: Map<string, BeamNodeMoment>,
+  ): MemberEndReactions {
     const loads = member.getEquivalentPointLoads();
     const L = member.length;
-    const startNode = member.startNode;
-    const endNode = member.endNode;
-    const leftMoment = startNode.support?.rightMoment ?? 0;
-    const rightMoment = endNode.support?.leftMoment ?? 0;
+    const { leftMoment, rightMoment } = this.getMemberEndMoments(
+      member,
+      momentsByNode,
+    );
 
-    const totalLoads = loads.reduce((acc: number, curr: PointLoad) => {
-      return acc + curr.magnitude;
-    }, 0);
+    const totalLoads = loads.reduce((acc, curr) => acc + curr.magnitude, 0);
 
     let leftReaction = 0;
     let rightReaction = 0;
 
-    if (startNode.support && endNode.support) {
-      const loadMoments = loads.reduce((acc: number, curr: PointLoad) => {
-        const distance = curr.position;
-        const moment = curr.magnitude * distance;
-
-        return acc + moment;
-      }, 0);
-
+    if (member.startNode.support && member.endNode.support) {
+      const loadMoments = loads.reduce(
+        (acc, curr) => acc + curr.magnitude * curr.position,
+        0,
+      );
       rightReaction = (loadMoments - leftMoment - rightMoment) / L;
-
       leftReaction = totalLoads - rightReaction;
-    } else {
-      if (startNode.support && !endNode.support) {
-        leftReaction = totalLoads;
-      } else if (!startNode.support && endNode.support) {
-        rightReaction = totalLoads;
-      }
+    } else if (member.startNode.support && !member.endNode.support) {
+      leftReaction = totalLoads;
+    } else if (!member.startNode.support && member.endNode.support) {
+      rightReaction = totalLoads;
     }
+
     return { leftReaction, rightReaction };
   }
 
-  updatedGetSupportReactions() {
-    // const supports = this.getSupports();
-    const nodes = this.nodes;
+  updatedSolveReactions(member: Beam | Column | InclinedMember) {
+    const momentsByNode = this.momentResultMap(this.updatedGetFinalMoments());
+    return this.memberEndReactions(member, momentsByNode);
+  }
 
-    const result: Record<string, number> = {};
+  /**
+   * Returns nodal support reactions with sign conventions:
+   * - Upward force is positive.
+   * - Anti-clockwise moment is positive.
+   */
+  updatedGetSupportReactions(): Record<string, BeamSupportReaction> {
+    const nodes = this.nodes;
+    const momentsByNode = this.momentResultMap(this.updatedGetFinalMoments());
+
+    const result: Record<string, BeamSupportReaction> = {};
 
     nodes
       .filter((node): node is Node => node.support !== null)
       .forEach((node) => {
-        // LEFT
-        let reaction = 0;
+        const support = node.support;
+        if (!support) return;
 
-        for (const member of node.connectedMembers) {
-          if (!member.isStart) {
-            const result =
-              this.updatedSolveReactions(member.member)?.rightReaction ?? 0;
-            reaction += result;
+        let xReaction = -node.xLoad;
+        let yReaction = node.yLoad;
+        let momentReaction = 0;
+
+        for (const conn of node.connectedMembers) {
+          const memberReactions = this.memberEndReactions(
+            conn.member,
+            momentsByNode,
+          );
+          if (conn.isStart) {
+            yReaction += memberReactions.leftReaction;
           } else {
-            const result =
-              this.updatedSolveReactions(member.member)?.leftReaction ?? 0;
-            reaction += result;
+            yReaction += memberReactions.rightReaction;
           }
         }
 
-        result[`SUPPORT${node.support?.id}`] = reaction;
+        // Anti-clockwise support reaction moment is positive.
+        if (support.type === "fixed") {
+          const supportMoment = support.leftMoment + support.rightMoment;
+          momentReaction = supportMoment + node.momentLoad;
+        }
+
+        result[`SUPPORT${support.id}`] = {
+          xReaction,
+          yReaction,
+          momentReaction,
+        };
       });
+
     return result;
   }
 
-  /**
-   * Calculates the internal moment at a specific distance x from the start of the beam.
-   * Assumes x is within [0, member.length].
-   * Sign Convention:
-   * - Sagging (Bottom Tension) is POSITIVE (+).
-   * - Hogging (Top Tension) is NEGATIVE (-).
-   *
-   * Method of Sections at distance x:
-   * Take moments about the cut section x, considering forces to the left.
-   * M(x) = (R_L * x) - (Moment of Support Reaction Force) - (Sum of Load Moments)
-   *
-   * Handling Support Moment (M_L):
-   * - Solver outputs "Left Moment" (M_L) as the moment acting on the member start.
-   * - FEM Convention: Anti-Clockwise is Positive (+).
-   * - Physical Bending: An Anti-Clockwise moment at the left end causes Hogging (Upward curl).
-   * - Therefore, Hogging = Negative Moment.
-   * - So contribution of M_L to internal moment is: -1 * M_L.
-   */
-  getInternalMoment(member: Beam, x: number): number {
-    const reactions = this.updatedSolveReactions(member);
-    const leftReaction = reactions.leftReaction;
+  private accumulatedLoadResultants(member: Beam, x: number) {
+    let totalLoad = 0;
+    let totalMomentAboutSection = 0;
 
-    // M_L is the moment at the start node (e.g. from Fixed support or continuity).
-    // In Slope Deflection / FEM logic here: Anti-Clockwise is Positive.
-    // An ACW moment at the left end creates tension at the top (Hogging).
-    // Thus, it contributes negatively to our Sagging-Positive convention.
-    const startNode = member.startNode;
-    const M_L = startNode.support?.rightMoment ?? 0;
-
-    // Base Calculation: Reaction * Distance - Support Moment
-    let moment = leftReaction * x - M_L;
-
-    // Subtract Moments from Loads to the left of x
     for (const load of member.loads) {
       if (load.name === "PointLoad") {
-        if (load.position < x) {
-          moment -= load.magnitude * (x - load.position);
+        if (load.position <= x) {
+          totalLoad += load.magnitude;
+          totalMomentAboutSection += load.magnitude * (x - load.position);
         }
       } else if (load.name === "UDL") {
-        // UDL(start, span, mag)
         const loadStart = load.startPosition;
         const loadEnd = load.startPosition + load.span;
-
-        // If the load starts after x, it doesn't affect the moment at x
         if (loadStart < x) {
-          // The portion of the UDL that is to the left of x
           const activeEnd = Math.min(loadEnd, x);
           const activeSpan = activeEnd - loadStart;
-          const activeMag = activeSpan * load.magnitudePerMeter;
-
-          // Distance from centroid of the active load portion to x
-          // Centroid is at loadStart + activeSpan/2
-          // Distance = x - (loadStart + activeSpan / 2)
-          const centroidDist = x - (loadStart + activeSpan / 2);
-
-          moment -= activeMag * centroidDist;
+          if (activeSpan > 0) {
+            const resultant = activeSpan * load.magnitudePerMeter;
+            const centroid = loadStart + activeSpan / 2;
+            totalLoad += resultant;
+            totalMomentAboutSection += resultant * (x - centroid);
+          }
         }
       } else if (load.name === "VDL") {
-        // VDL logic is complex for partial spans.
-        // For now, if x covers the entire VDL, we treat it as a resultant point load.
-        // If x cuts the VDL, we need integration.
-        // Skipping precise cut-VDL logic for now to avoid complexity unless requested.
-        // Falls back to approximation if fully to the left.
-
+        // For now, only include full VDL that lies to the left of the section.
+        // This matches the current solver approximation.
         if (load.highPosition <= x && load.lowPosition <= x) {
           const resultant = load.getResultantLoad();
-          moment -= resultant.magnitude * (x - resultant.position);
+          totalLoad += resultant.magnitude;
+          totalMomentAboutSection +=
+            resultant.magnitude * (x - resultant.position);
         }
       }
     }
 
-    return moment;
+    return { totalLoad, totalMomentAboutSection };
+  }
+
+  /** Internal shear V(x), with upward positive sign convention. */
+  getInternalShear(member: Beam, x: number): number {
+    const momentsByNode = this.momentResultMap(this.updatedGetFinalMoments());
+    const endReactions = this.memberEndReactions(member, momentsByNode);
+    const applied = this.accumulatedLoadResultants(member, x);
+    return endReactions.leftReaction - applied.totalLoad;
   }
 
   /**
-   * Calculates the maximum sagging (+) and hogging (-) moments for each beam span.
-   * @param step Step size for iteration in meters (default 0.1)
+   * Internal bending moment M(x), anti-clockwise positive.
+   * Sagging/hogging interpretation depends on your section sign convention.
+   */
+  getInternalMoment(member: Beam, x: number): number {
+    const momentsByNode = this.momentResultMap(this.updatedGetFinalMoments());
+    const endReactions = this.memberEndReactions(member, momentsByNode);
+    const endMoments = this.getMemberEndMoments(member, momentsByNode);
+    const applied = this.accumulatedLoadResultants(member, x);
+
+    return (
+      endReactions.leftReaction * x -
+      endMoments.leftMoment -
+      applied.totalMomentAboutSection
+    );
+  }
+
+  /** Beam internal force data from solver-native statics at section cuts. */
+  getInternalForceData(
+    member: Beam,
+    step: number = 0.1,
+  ): BeamInternalForcePoint[] {
+    const points: number[] = [];
+    for (let x = 0; x <= member.length; x += step) {
+      points.push(x);
+    }
+    if (Math.abs(points[points.length - 1] - member.length) > 1e-6) {
+      points.push(member.length);
+    }
+
+    return points.map((x) => ({
+      x,
+      shear: this.getInternalShear(member, x),
+      moment: this.getInternalMoment(member, x),
+      axial: 0,
+    }));
+  }
+
+  getAllBeamInternalForceData(step: number = 0.1) {
+    return this.beams.map((beam) => ({
+      beam: `Beam ${beam.startNode.id}-${beam.endNode.id}`,
+      data: this.getInternalForceData(beam, step),
+    }));
+  }
+
+  /**
+   * Calculates maximum positive and negative moments for each beam span.
+   * @param step step size in member local length units
    */
   getMaxMomentPerSpan(step: number = 0.1) {
-    // Ensure we solve for moments and reactions first
-    // Note: updatedGetFinalMoments modifies the supports in-place with moments
-    this.updatedGetFinalMoments();
-
     return this.beams.map((beam) => {
-      let maxSagging = -Infinity;
-      let maxHogging = Infinity;
+      const data = this.getInternalForceData(beam, step);
+      let maxPositive = -Infinity;
+      let maxNegative = Infinity;
 
-      // Iteration points including ends
-      const points: number[] = [];
-      for (let x = 0; x <= beam.length; x += step) {
-        points.push(x);
+      for (const point of data) {
+        if (point.moment > maxPositive) maxPositive = point.moment;
+        if (point.moment < maxNegative) maxNegative = point.moment;
       }
-      if (Math.abs(points[points.length - 1] - beam.length) > 1e-6) {
-        points.push(beam.length);
-      }
-
-      for (const x of points) {
-        const m = this.getInternalMoment(beam, x);
-        if (m > maxSagging) maxSagging = m;
-        if (m < maxHogging) maxHogging = m;
-      }
-
-      // Logic check: if maxSagging is still negative, then no sagging occurred (all hogging) -> 0
-      if (maxSagging < 0) maxSagging = 0;
-      // if maxHogging is still positive, then no hogging occurred -> 0
-      if (maxHogging > 0) maxHogging = 0;
 
       return {
         beam: `Beam ${beam.startNode.id}-${beam.endNode.id}`,
-        maxSagging, // Positive (kNm)
-        maxHogging, // Negative (kNm)
+        maxPositiveMoment: maxPositive,
+        maxNegativeMoment: maxNegative,
       };
     });
   }
 }
-
-const output = new BeamSolver([BC]);
-console.log(output.updatedGetFinalMoments());
-
-console.log(output.updatedGetSupportReactions());
-
-output.updatedGetFinalMoments();

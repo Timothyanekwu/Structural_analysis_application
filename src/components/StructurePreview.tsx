@@ -7,6 +7,15 @@ import { ForceUnit, MomentUnit } from "@/utils/unitUtils";
 type Point = { x: number; y: number };
 type SupportType = "None" | "Fixed" | "Pinned" | "Roller";
 type LoadType = "Point" | "UDL" | "VDL";
+type BeamSectionType = "Rectangular" | "L" | "T";
+
+export interface JointAction {
+  fx?: number;
+  fy?: number;
+  mz?: number;
+  imposedDx?: number;
+  imposedDy?: number;
+}
 
 export interface Load {
   id: string;
@@ -25,6 +34,7 @@ export interface Member {
   startNode: Point;
   endNode: Point;
   memberType?: string;
+  beamSectionType?: BeamSectionType;
   workflowMode?: "analysis" | "design";
   includeSettlements?: boolean;
   supports: {
@@ -32,6 +42,10 @@ export interface Member {
     end: SupportType;
     startSettlement?: number;
     endSettlement?: number;
+  };
+  jointActions?: {
+    start?: JointAction;
+    end?: JointAction;
   };
   loads: Load[];
   Ecoef?: number;

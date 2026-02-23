@@ -16,6 +16,14 @@ type Point = { x: number | ""; y: number | "" };
 // Simplified for Beam context - internally always "Beam"
 type SupportType = "None" | "Fixed" | "Pinned" | "Roller";
 type LoadType = "Point" | "UDL" | "VDL";
+type BeamSectionType = "Rectangular" | "L" | "T";
+type JointAction = {
+  fx: number | "";
+  fy: number | "";
+  mz: number | "";
+  imposedDx: number | "";
+  imposedDy: number | "";
+};
 
 interface MemberFormProps {
   mode?: "beams" | "frames";
@@ -60,6 +68,9 @@ export default function MemberForm({
 
   const [memberType, setMemberType] = useState<"Beam" | "Column" | "Inclined">(
     isBeamMode ? "Beam" : (initialData?.memberType as any) || "Beam",
+  );
+  const [beamSectionType, setBeamSectionType] = useState<BeamSectionType>(
+    (initialData?.beamSectionType as BeamSectionType) || "Rectangular",
   );
 
   const [startNodeIdx, setStartNodeIdx] = useState<number>(
@@ -148,6 +159,25 @@ export default function MemberForm({
       (initialData?.supports?.endSettlement ?? 0) !== 0,
   );
   const [unitResetSignal, setUnitResetSignal] = useState(0);
+  const [jointActions, setJointActions] = useState<{
+    start: JointAction;
+    end: JointAction;
+  }>({
+    start: {
+      fx: initialData?.jointActions?.start?.fx ?? "",
+      fy: initialData?.jointActions?.start?.fy ?? "",
+      mz: initialData?.jointActions?.start?.mz ?? "",
+      imposedDx: initialData?.jointActions?.start?.imposedDx ?? "",
+      imposedDy: initialData?.jointActions?.start?.imposedDy ?? "",
+    },
+    end: {
+      fx: initialData?.jointActions?.end?.fx ?? "",
+      fy: initialData?.jointActions?.end?.fy ?? "",
+      mz: initialData?.jointActions?.end?.mz ?? "",
+      imposedDx: initialData?.jointActions?.end?.imposedDx ?? "",
+      imposedDy: initialData?.jointActions?.end?.imposedDy ?? "",
+    },
+  });
 
   const [focusNode, setFocusNode] = useState<"start" | "end" | null>(null);
 
@@ -268,8 +298,16 @@ export default function MemberForm({
       : Ecoef === ""
         ? DEFAULT_E_MODULUS
         : Number(Ecoef);
-    const resolvedI = isIConstant ? 1 : Icoef === "" ? undefined : Number(Icoef);
-    if (!isDesignMode && !isIConstant && (Icoef === "" || Icoef === undefined)) {
+    const resolvedI = isIConstant
+      ? 1
+      : Icoef === ""
+        ? undefined
+        : Number(Icoef);
+    if (
+      !isDesignMode &&
+      !isIConstant &&
+      (Icoef === "" || Icoef === undefined)
+    ) {
       alert(
         "Please provide I for Analysis mode, or enable 'I Constant x1', or switch to Design mode.",
       );
@@ -298,11 +336,28 @@ export default function MemberForm({
         y: isBeamMode ? 0 : Number(endNode.y || 0),
       },
       memberType: isBeamMode ? "Beam" : memberType,
+      beamSectionType: beamSectionType,
       workflowMode: isDesignMode ? "design" : "analysis",
       includeSettlements: useSettlements,
       supports: {
         ...supports,
         ...resolvedSettlements,
+      },
+      jointActions: {
+        start: {
+          fx: Number(jointActions.start.fx || 0),
+          fy: Number(jointActions.start.fy || 0),
+          mz: Number(jointActions.start.mz || 0),
+          imposedDx: Number(jointActions.start.imposedDx || 0),
+          imposedDy: Number(jointActions.start.imposedDy || 0),
+        },
+        end: {
+          fx: Number(jointActions.end.fx || 0),
+          fy: Number(jointActions.end.fy || 0),
+          mz: Number(jointActions.end.mz || 0),
+          imposedDx: Number(jointActions.end.imposedDx || 0),
+          imposedDy: Number(jointActions.end.imposedDy || 0),
+        },
       },
       loads,
       Ecoef: resolvedE,
@@ -324,6 +379,7 @@ export default function MemberForm({
       y: isBeamMode ? 0 : Number(endNode.y || 0),
     },
     memberType: isBeamMode ? "Beam" : memberType,
+    beamSectionType: beamSectionType,
     workflowMode: isDesignMode ? "design" : "analysis",
     includeSettlements: useSettlements,
     supports: {
@@ -331,12 +387,24 @@ export default function MemberForm({
       startSettlement: useSettlements ? Number(settlement.start || 0) : 0,
       endSettlement: useSettlements ? Number(settlement.end || 0) : 0,
     },
+    jointActions: {
+      start: {
+        fx: Number(jointActions.start.fx || 0),
+        fy: Number(jointActions.start.fy || 0),
+        mz: Number(jointActions.start.mz || 0),
+        imposedDx: Number(jointActions.start.imposedDx || 0),
+        imposedDy: Number(jointActions.start.imposedDy || 0),
+      },
+      end: {
+        fx: Number(jointActions.end.fx || 0),
+        fy: Number(jointActions.end.fy || 0),
+        mz: Number(jointActions.end.mz || 0),
+        imposedDx: Number(jointActions.end.imposedDx || 0),
+        imposedDy: Number(jointActions.end.imposedDy || 0),
+      },
+    },
     loads: loads,
-    Ecoef: isEConstant
-      ? 1
-      : Ecoef === ""
-        ? DEFAULT_E_MODULUS
-        : Number(Ecoef),
+    Ecoef: isEConstant ? 1 : Ecoef === "" ? DEFAULT_E_MODULUS : Number(Ecoef),
     Icoef: isIConstant ? 1 : Icoef === "" ? undefined : Number(Icoef),
     b: isDesignMode ? Number(sectionProps.b || 0) : 0,
     h: isDesignMode ? Number(sectionProps.h || 0) : 0,
@@ -350,7 +418,7 @@ export default function MemberForm({
         <div className="absolute top-6 left-6 z-20 flex items-center gap-3">
           <div className="w-2 h-2 rounded-full bg-[var(--primary)] animate-pulse shadow-[0_0_8px_var(--primary-glow)]"></div>
           <span className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400">
-            Geometry Kernel Preview
+            Structural Preview
           </span>
         </div>
         <div className="flex-1 rounded-3xl overflow-hidden border border-white/5 bg-black/20 shadow-inner">
@@ -377,7 +445,7 @@ export default function MemberForm({
       <div className="xl:col-span-5 p-5 sm:p-6 lg:p-7 xl:p-8 space-y-8 overflow-y-auto xl:max-h-[85vh] custom-scrollbar">
         <header>
           <h2 className="text-3xl font-black tracking-tighter gradient-text uppercase mb-1">
-            {initialData ? "Sync Config" : "Init Matrix"}
+            {initialData ? "Sync Config" : "Define Member"}
           </h2>
           <p className="text-[10px] text-gray-500 font-bold tracking-widest uppercase">
             {isBeamMode ? "Beam" : "Member"} Definition Protocol
@@ -404,8 +472,8 @@ export default function MemberForm({
               <div className="flex-1 h-px bg-white/5"></div>
             </header>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              {["Beam", "Column", "Inclined"].map((type) => (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {(["Beam", "Column"] as const).map((type) => (
                 <button
                   key={type}
                   onClick={() => setMemberType(type as any)}
@@ -631,9 +699,28 @@ export default function MemberForm({
                 </button>
               </div>
               <p className="text-[9px] text-gray-600 leading-relaxed px-1">
-                Analysis mode uses only E and I. Design mode also enables section
-                geometry for I auto-derivation and downstream RCC workflow.
+                Analysis mode uses only E and I. Design mode also enables
+                section geometry for I auto-derivation and downstream RCC
+                workflow.
               </p>
+              {memberType === "Beam" && (
+                <div className="space-y-2">
+                  <label className="ml-1 block text-[9px] font-black uppercase tracking-widest text-gray-500">
+                    Beam Section Type
+                  </label>
+                  <select
+                    value={beamSectionType}
+                    onChange={(e) =>
+                      setBeamSectionType(e.target.value as BeamSectionType)
+                    }
+                    className="w-full rounded-xl border border-white/10 bg-black px-3 py-2 text-xs font-bold uppercase outline-none"
+                  >
+                    <option value="Rectangular">Rectangular</option>
+                    <option value="L">L-Beam</option>
+                    <option value="T">T-Beam</option>
+                  </select>
+                </div>
+              )}
             </div>
 
             {isDesignMode && (
@@ -814,7 +901,7 @@ export default function MemberForm({
                     value={newLoad.value}
                     onChange={(val) => setNewLoad({ ...newLoad, value: val })}
                     label={
-                      newLoad.type === "Point" ? "Force" : "Start Magnitude"
+                      newLoad.type === "Point" ? "Force" : "Force Magnitude"
                     }
                     placeholder="0.00"
                   />
@@ -860,7 +947,7 @@ export default function MemberForm({
                         onChange={(val) =>
                           setNewLoad({ ...newLoad, span: val })
                         }
-                        label="Span Length"
+                        label="UDL Length"
                         placeholder="0.00"
                       />
                     </div>
@@ -1107,6 +1194,166 @@ export default function MemberForm({
               </div>
             )}
           </div>
+          <div className="bg-white/[0.02] border border-white/5 p-4 rounded-2xl space-y-4">
+            <div className="flex items-center gap-2">
+              <div className="w-1.5 h-1.5 rounded-full bg-blue-400"></div>
+              <span className="text-[9px] font-black uppercase tracking-widest text-gray-500">
+                Joint Actions (Upward +ve, ACW Moment +ve)
+              </span>
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="space-y-3 rounded-xl border border-white/10 bg-black/20 p-3">
+                <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">
+                  Start Node Actions
+                </p>
+                <UnitInput
+                  unitType="force"
+                  preferredUnit={defaultUnits.force}
+                  resetSignal={unitResetSignal}
+                  value={jointActions.start.fx}
+                  onChange={(val) =>
+                    setJointActions((prev) => ({
+                      ...prev,
+                      start: { ...prev.start, fx: val },
+                    }))
+                  }
+                  label="Fx"
+                  placeholder="0.00"
+                />
+                <UnitInput
+                  unitType="force"
+                  preferredUnit={defaultUnits.force}
+                  resetSignal={unitResetSignal}
+                  value={jointActions.start.fy}
+                  onChange={(val) =>
+                    setJointActions((prev) => ({
+                      ...prev,
+                      start: { ...prev.start, fy: val },
+                    }))
+                  }
+                  label="Fy"
+                  placeholder="0.00"
+                />
+                <UnitInput
+                  unitType="moment"
+                  preferredUnit={defaultUnits.moment}
+                  resetSignal={unitResetSignal}
+                  value={jointActions.start.mz}
+                  onChange={(val) =>
+                    setJointActions((prev) => ({
+                      ...prev,
+                      start: { ...prev.start, mz: val },
+                    }))
+                  }
+                  label="Mz"
+                  placeholder="0.00"
+                />
+                <UnitInput
+                  unitType="length"
+                  preferredUnit={defaultUnits.length}
+                  resetSignal={unitResetSignal}
+                  value={jointActions.start.imposedDx}
+                  onChange={(val) =>
+                    setJointActions((prev) => ({
+                      ...prev,
+                      start: { ...prev.start, imposedDx: val },
+                    }))
+                  }
+                  label="Imposed dx"
+                  placeholder="0.00"
+                />
+                <UnitInput
+                  unitType="length"
+                  preferredUnit={defaultUnits.length}
+                  resetSignal={unitResetSignal}
+                  value={jointActions.start.imposedDy}
+                  onChange={(val) =>
+                    setJointActions((prev) => ({
+                      ...prev,
+                      start: { ...prev.start, imposedDy: val },
+                    }))
+                  }
+                  label="Imposed dy"
+                  placeholder="0.00"
+                />
+              </div>
+              <div className="space-y-3 rounded-xl border border-white/10 bg-black/20 p-3">
+                <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">
+                  End Node Actions
+                </p>
+                <UnitInput
+                  unitType="force"
+                  preferredUnit={defaultUnits.force}
+                  resetSignal={unitResetSignal}
+                  value={jointActions.end.fx}
+                  onChange={(val) =>
+                    setJointActions((prev) => ({
+                      ...prev,
+                      end: { ...prev.end, fx: val },
+                    }))
+                  }
+                  label="Fx"
+                  placeholder="0.00"
+                />
+                <UnitInput
+                  unitType="force"
+                  preferredUnit={defaultUnits.force}
+                  resetSignal={unitResetSignal}
+                  value={jointActions.end.fy}
+                  onChange={(val) =>
+                    setJointActions((prev) => ({
+                      ...prev,
+                      end: { ...prev.end, fy: val },
+                    }))
+                  }
+                  label="Fy"
+                  placeholder="0.00"
+                />
+                <UnitInput
+                  unitType="moment"
+                  preferredUnit={defaultUnits.moment}
+                  resetSignal={unitResetSignal}
+                  value={jointActions.end.mz}
+                  onChange={(val) =>
+                    setJointActions((prev) => ({
+                      ...prev,
+                      end: { ...prev.end, mz: val },
+                    }))
+                  }
+                  label="Mz"
+                  placeholder="0.00"
+                />
+                <UnitInput
+                  unitType="length"
+                  preferredUnit={defaultUnits.length}
+                  resetSignal={unitResetSignal}
+                  value={jointActions.end.imposedDx}
+                  onChange={(val) =>
+                    setJointActions((prev) => ({
+                      ...prev,
+                      end: { ...prev.end, imposedDx: val },
+                    }))
+                  }
+                  label="Imposed dx"
+                  placeholder="0.00"
+                />
+                <UnitInput
+                  unitType="length"
+                  preferredUnit={defaultUnits.length}
+                  resetSignal={unitResetSignal}
+                  value={jointActions.end.imposedDy}
+                  onChange={(val) =>
+                    setJointActions((prev) => ({
+                      ...prev,
+                      end: { ...prev.end, imposedDy: val },
+                    }))
+                  }
+                  label="Imposed dy"
+                  placeholder="0.00"
+                />
+              </div>
+            </div>
+          </div>
           <p className="text-[10px] text-gray-600 italic px-2 leading-relaxed">
             Supports sync from linked nodes. Settlements are optional and stay
             zero unless enabled.
@@ -1125,4 +1372,3 @@ export default function MemberForm({
     </div>
   );
 }
-

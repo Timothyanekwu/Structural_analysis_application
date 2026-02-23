@@ -126,7 +126,7 @@ export default function SettingsPage() {
                 }
                 className="w-full rounded-xl border border-white/10 bg-black px-3 py-2 text-xs font-bold uppercase outline-none"
               >
-                {(["kN/m", "N/m", "lb/ft", "kip/ft"] as LoadingUnit[]).map(
+                {(["kN/m", "N/mm", "lb/ft", "kip/ft"] as LoadingUnit[]).map(
                   (u) => (
                     <option key={u} value={u}>
                       {u}
@@ -175,7 +175,7 @@ export default function SettingsPage() {
                 className="w-full rounded-xl border border-white/10 bg-black px-3 py-2 text-xs font-bold uppercase outline-none"
               >
                 {(
-                  ["kN/m^2", "N/m^2", "MPa", "GPa", "psi"] as ElasticModulusUnit[]
+                  ["kN/m^2", "MPa", "GPa", "psi", "ksi"] as ElasticModulusUnit[]
                 ).map((u) => (
                   <option key={u} value={u}>
                     {u}

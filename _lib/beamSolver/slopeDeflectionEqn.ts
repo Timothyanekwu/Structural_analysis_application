@@ -1,10 +1,4 @@
-import {
-  FixedSupport,
-  PinnedSupport,
-  RollerSupport,
-} from "../elements/support";
 import { FixedEndMoments } from "../logic/FEMs";
-import { Moment } from "../logic/moment";
 import { Node } from "../elements/node";
 import { Beam } from "../elements/member";
 
@@ -106,7 +100,6 @@ export class SlopeDeflection {
     }
 
     const fem = new FixedEndMoments();
-    const moment = new Moment();
 
     // let clk: Term[] = [];
     // let antiClk: Term[] = [];
@@ -149,6 +142,7 @@ export class SlopeDeflection {
         const I =
           Imember[`member${currMember.startNode.id}${currMember.endNode.id}`];
 
+        // cantelever problem
         if (!isFreeNode(node) && isFreeNode(currMember.endNode)) {
           antiClk[`MOMENT${currMember.startNode.id}${currMember.endNode.id}`] =
             [

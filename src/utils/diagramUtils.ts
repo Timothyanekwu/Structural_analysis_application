@@ -173,13 +173,6 @@ export const calculateDiagramData = (
   });
 
   const V0 = (M_end + M_start + momentOfLoadsAboutEnd) / L;
-  console.log(`[diagramUtils] V0 Calculation:`, {
-    L,
-    M_start,
-    M_end,
-    momentOfLoadsAboutEnd,
-    V0
-  });
 
   // 3. Marching Solution
   // 3. Marching Solution
@@ -286,10 +279,6 @@ export const calculateDiagramData = (
         moment: -results.leftMoment + (V0 * x) - loadMoment,
         axial: P0 - loadAxial
       };
-
-      if (Math.abs(x - L) < 1e-6 && includeAtX) {
-        console.log(`[diagramUtils] State at x=L:`, state);
-      }
 
       return state;
     };

@@ -56,6 +56,21 @@ export class SlopeDeflection {
   private swayGroups: SwayGroup[] = [];
   private compatibleDisp = new Map<Node, { dx: number; dy: number }>();
 
+  /**
+   * Pre-computes "which nodes can translate together" before building equations.
+   *
+   * Why beam-connected groups?
+   * - In this solver, frame side-sway DOF is represented at story/group level.
+   * - Nodes connected by beams are assumed to share the same horizontal translation mode.
+   *
+   * Non-sway case:
+   * - If any node in a beam-connected group has fixed/pinned support, that group's
+   *   lateral translation is restrained => no DELTA variable (varName = null).
+   *
+   * Sway case:
+   * - If a group has no horizontal restraint (no fixed/pinned node), create one
+   *   DELTA_<id> unknown for that group. Column end-moment terms will include it.
+   */
   configureModel(nodes: Node[], members: (Beam | Column | InclinedMember)[]) {
     this.nodeToSwayVar.clear();
     this.swayGroups = [];
@@ -64,6 +79,7 @@ export class SlopeDeflection {
     const beamAdj = new Map<Node, Node[]>();
     for (const node of nodes) beamAdj.set(node, []);
 
+    // Build connectivity graph using beams only (story-level linkage).
     for (const member of members) {
       if (!(member instanceof Beam)) continue;
       beamAdj.get(member.startNode)?.push(member.endNode);
@@ -73,6 +89,9 @@ export class SlopeDeflection {
     const visited = new Set<Node>();
     let freeGroupIndex = 1;
 
+    // Find beam-connected components and assign each component either:
+    // - null (restrained, non-sway component), or
+    // - DELTA_i (free-sway component).
     for (const seed of nodes) {
       if (visited.has(seed)) continue;
 
@@ -90,6 +109,7 @@ export class SlopeDeflection {
         }
       }
 
+      // Fixed/pinned support restrains global x-translation for the component.
       const restrained = component.some(
         (n) => n.support?.type === "fixed" || n.support?.type === "pinned",
       );
@@ -99,6 +119,8 @@ export class SlopeDeflection {
       for (const node of component) this.nodeToSwayVar.set(node, varName);
     }
 
+    // Settlement / imposed displacement compatibility is solved once here and
+    // reused when forming member settlement constants in end-moment equations.
     this.resolveCompatibleNodalDisplacements(nodes, members);
   }
 
@@ -122,6 +144,7 @@ export class SlopeDeflection {
       known[key] = value;
     };
 
+    // Step 1: populate known translational DOFs from supports + imposed inputs.
     for (const node of nodes) {
       const ux = this.uxVar(node);
       const uy = this.uyVar(node);
@@ -144,6 +167,9 @@ export class SlopeDeflection {
       if (Math.abs(imposedY) > tol) setKnown(uy, imposedY);
     }
 
+    // Step 2: for each member, impose axial-rigid compatibility:
+    // (u_end - u_start) dot member-axis = 0.
+    // Unknown translational DOFs are solved from this linear system.
     for (const member of members) {
       if (!isBeamOrColumn(member)) continue;
       const L = member.length;
@@ -182,11 +208,14 @@ export class SlopeDeflection {
       equations.push(eq);
     }
 
+    // Least-squares fallback keeps the model solvable in mildly over/under
+    // constrained displacement input sets.
     const sol =
       equations.length > 0
         ? this.eqSolver.solveEquations(equations, { allowLeastSquares: true })
         : {};
 
+    // Cache final compatible nodal displacements for settlement terms.
     for (const node of nodes) {
       const dx = known[this.uxVar(node)] ?? sol[this.uxVar(node)] ?? 0;
       const dy = known[this.uyVar(node)] ?? sol[this.uyVar(node)] ?? 0;
@@ -203,7 +232,9 @@ export class SlopeDeflection {
   }
 
   private isTerminalNode(node: Node) {
-    const n = node.connectedMembers.filter((c) => isBeamOrColumn(c.member)).length;
+    const n = node.connectedMembers.filter((c) =>
+      isBeamOrColumn(c.member),
+    ).length;
     return n <= 1;
   }
 
@@ -235,7 +266,10 @@ export class SlopeDeflection {
   }
 
   private scaleTerms(terms: Term[], factor: number) {
-    return terms.map((t) => ({ name: t.name, coefficient: t.coefficient * factor }));
+    return terms.map((t) => ({
+      name: t.name,
+      coefficient: t.coefficient * factor,
+    }));
   }
 
   private getNodeImposedDisplacement(node: Node) {
@@ -272,8 +306,9 @@ export class SlopeDeflection {
     const endVar = this.swayVar(member.endNode);
 
     const terms: Term[] = [];
-    // Use the same chord-rotation reference at both member ends.
-    // This avoids artificial DELTA cancellation in symmetric sway frames.
+    // Slope-deflection sway term for columns: +/- (6EI/L^2) * DELTA_group.
+    // Using the same reference convention at both ends avoids accidental
+    // cancellation in symmetric layouts.
     if (startVar) terms.push({ name: startVar, coefficient: coeff });
     if (endVar) terms.push({ name: endVar, coefficient: -coeff });
     return terms;
@@ -284,14 +319,24 @@ export class SlopeDeflection {
     const near = atStart ? member.startNode : member.endNode;
     const far = atStart ? member.endNode : member.startNode;
 
+    // Free-end special handling (cantilever/overhang behavior):
+    // - near free, far restrained => M_near = 0
+    // - near restrained, far free => M_near from member load statics only
     const nearFree = this.isFreeNode(near);
     const farFree = this.isFreeNode(far);
     if (nearFree && !farFree) {
       return [{ name: "c", coefficient: 0 }];
     }
     if (!nearFree && farFree) {
-      return [{ name: "c", coefficient: this.loadMomentAboutNode(member, near) }];
+      return [
+        { name: "c", coefficient: this.loadMomentAboutNode(member, near) },
+      ];
     }
+
+    // Standard slope-deflection form for the near end:
+    // M_near = FEM + (4EI/L)*theta_near + (2EI/L)*theta_far
+    //        + settlement term (+ sway term for columns)
+    // The implementation uses k = 2EI/L, hence 2k and k multipliers.
 
     const femConst =
       this.fem.getFixedEndMoment(member, atStart ? "start" : "end") ?? 0;
@@ -306,10 +351,12 @@ export class SlopeDeflection {
       terms.push({ name: this.thetaName(far), coefficient: k });
     }
 
+    // Settlement contribution enters as a constant term in end moment.
     const settlement = this.getMemberSettlementConstant(member);
     if (settlement) terms[0].coefficient += settlement;
 
     if (member instanceof Column) {
+      // Only columns receive side-sway DELTA coupling in this formulation.
       terms.push(...this.getColumnSwayTerms(member));
     }
 
@@ -329,11 +376,14 @@ export class SlopeDeflection {
     const clk: EndMomentMap = {};
     const antiClk: EndMomentMap = {};
 
+    // Build symbolic end-moment expression for every member meeting this node.
+    // Keys use MOMENTij => moment at i-end of member i-j.
     for (const conn of node.connectedMembers) {
       const member = conn.member;
       if (!isBeamOrColumn(member)) continue;
 
-      const other = member.startNode === node ? member.endNode : member.startNode;
+      const other =
+        member.startNode === node ? member.endNode : member.startNode;
       const key = `MOMENT${node.id}${other.id}`;
       clk[key] = this.getEndMomentTerms(member, node);
     }
@@ -348,6 +398,8 @@ export class SlopeDeflection {
       ...Object.values(antiClk).flat(),
     ];
 
+    // Joint equilibrium: sum of end moments at node + applied nodal moment = 0.
+    // Unknowns in this equation are THETA_* and (for sway cases) DELTA_*.
     const eq = this.collectLikeTerms(terms);
     if (node.momentLoad) {
       eq.c = (eq.c ?? 0) + node.momentLoad;
@@ -385,6 +437,9 @@ export class SlopeDeflection {
   ) {
     const eqns: Record<string, number>[] = [];
 
+    // One translational equilibrium equation per free sway group:
+    // sum(column-end shears in group) - sum(node x-loads in group) = 0.
+    // Non-sway groups have varName = null and are skipped.
     for (const group of this.swayGroups) {
       if (!group.varName) continue;
 

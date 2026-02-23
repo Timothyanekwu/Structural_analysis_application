@@ -74,25 +74,35 @@ export class FrameSolver {
     const r = this.supports.filter((s) => s.type === "roller").length;
     const m = this.members.length;
 
+    // Classical kinematic side-sway indicator used for quick classification.
+    // ss > 0 suggests additional translational DOF(s) beyond pure joint rotations.
     const ss = 2 * j - (2 * (f + h) + r + m);
     const hasHorizontalRestraint = this.supports.some(
       (s) => s.type === "fixed" || s.type === "pinned",
     );
 
+    // If no support resists global x, frame must be sway.
     if (!hasHorizontalRestraint) return true;
     return ss > 0;
   }
 
   updatedGetSupportMoments() {
+    // Prepare per-node/group DOF mapping and displacement compatibility first.
     this.slopeDeflection.configureModel(this.nodes, this.members);
+    // Returns symbolic end-moment term maps (not yet numerically evaluated).
     return this.nodes.map((node) =>
       this.slopeDeflection.updatedSupportEquation(node),
     );
   }
 
   updatedGetEquations() {
+    // Rebuild DOF/group mapping before equation assembly to keep state coherent.
     this.slopeDeflection.configureModel(this.nodes, this.members);
 
+    // Joint equations:
+    // - One rotational equilibrium equation per non-fixed joint.
+    // - In non-sway frames these contain THETA_* only.
+    // - In sway frames they can also include DELTA_* terms through columns.
     const rawJointEqns = this.nodes
       .filter((node) => node.support?.type !== "fixed")
       .map((node) => this.slopeDeflection.updatedGetEquations(node));
@@ -108,19 +118,25 @@ export class FrameSolver {
       return false;
     });
 
+    // Translational equilibrium equations for each free sway group.
+    // Empty for non-sway models (no DELTA unknowns).
     const swayEqns = this.slopeDeflection.getSwayEquations(
       this.nodes,
       this.members,
     );
 
+    // Final simultaneous system: [joint rotation eqns + sway eqns].
     return [...jointEqns, ...swayEqns];
   }
 
   updatedGetFinalMoments() {
+    // 1) Build symbolic member-end moments.
     const supportMoments = this.updatedGetSupportMoments();
+    // 2) Build and solve simultaneous equations for THETA_*/DELTA_* unknowns.
     const equations = this.updatedGetEquations();
     const simSoln = this.equation.solveEquations(equations);
 
+    // 3) Substitute solved unknowns into each symbolic end-moment expression.
     return supportMoments.reduce(
       (acc, eqn) => {
         const clk = Object.fromEntries(
@@ -259,6 +275,7 @@ export class FrameSolver {
 
   updatedSolveReactions() {
     this.validateModel();
+    // End moments are solved first (slope-deflection stage).
     const moments = this.updatedGetFinalMoments();
 
     for (const node of this.nodes) {
@@ -271,6 +288,7 @@ export class FrameSolver {
 
     for (const member of this.members) {
       if (member instanceof Beam) {
+        // Beam shear from end moments + vertical member loads.
         const { RyStart, RyEnd } = this.computeBeamShear(member, moments);
         member.endReactions.RyStart = RyStart;
         member.endReactions.RyEnd = RyEnd;
@@ -280,6 +298,7 @@ export class FrameSolver {
           `Beam ${member.startNode.id}${member.endNode.id}: RyStart=${RyStart.toFixed(3)}, RyEnd=${RyEnd.toFixed(3)}`,
         );
       } else if (member instanceof Column) {
+        // Column horizontal shear from end moments + horizontal member loads.
         const { RxStart, RxEnd } = this.computeColumnShear(member, moments);
         member.endReactions.RxStart = RxStart;
         member.endReactions.RxEnd = RxEnd;
@@ -291,6 +310,9 @@ export class FrameSolver {
       }
     }
 
+    // Secondary balancing step:
+    // - axis x: distribute beam axial forces needed by node x-equilibrium.
+    // - axis y: distribute column axial forces needed by node y-equilibrium.
     this.solveAxialBalance("x");
     this.solveAxialBalance("y");
 
