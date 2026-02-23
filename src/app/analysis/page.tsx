@@ -58,7 +58,7 @@ type SolveResults = {
   beamDiagrams: BeamMemberDiagram[];
 };
 
-export default function AnalysisContent() {
+function AnalysisContent() {
   const searchParams = useSearchParams();
   const mode = searchParams.get("type") || "beams";
   const isFrameMode = mode === "frames";
@@ -1443,5 +1443,13 @@ export default function AnalysisContent() {
         <div className="absolute top-[40%] -right-[10%] w-[40%] h-[50%] bg-[var(--accent)] rounded-full blur-[180px] opacity-20"></div>
       </div>
     </div>
+  );
+}
+
+export default function AnalysisPage() {
+  return (
+    <Suspense fallback={null}>
+      <AnalysisContent />
+    </Suspense>
   );
 }
