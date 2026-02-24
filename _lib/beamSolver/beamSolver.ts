@@ -8,6 +8,8 @@ import { FixedEndMoments } from "../logic/FEMs";
 import { SlopeDeflection } from "./slopeDeflectionEqn";
 import { Equation } from "../logic/simultaneousEqn";
 import { Node } from "../elements/node";
+import { ShearDesignEngine } from "../RCCDesign/ShearDesignEngine";
+import type { BeamData, ShearPoint, ShearZone } from "../RCCDesign/ShearDesignEngine";
 
 export type BeamNodeMoment = {
   nodeId: string;
@@ -301,6 +303,24 @@ export class BeamSolver {
       beam: `Beam ${beam.startNode.id}-${beam.endNode.id}`,
       data: this.getInternalForceData(beam, step),
     }));
+  }
+
+  /** Shear-force diagram points in {x, V_kN} form for RCC shear checks. */
+  getShearDiagramPoints(member: Beam, step: number = 0.1): ShearPoint[] {
+    return this.getInternalForceData(member, step).map((point) => ({
+      x: point.x,
+      V_kN: point.shear,
+    }));
+  }
+
+  /** RCC shear detailing zones derived directly from solver SFD points. */
+  getShearDesignZones(
+    member: Beam,
+    beamData: BeamData,
+    step: number = 0.1,
+  ): ShearZone[] {
+    const sfdData = this.getShearDiagramPoints(member, step);
+    return ShearDesignEngine.analyzeBeamRanges(sfdData, beamData);
   }
 
   /**

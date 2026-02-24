@@ -88,7 +88,7 @@ export class Beam extends Member {
     slabThickness = 0,
   ) {
     // If caller passes explicit Icoef (!= 1 default), keep it.
-    // Otherwise derive from section dimensions.
+    // Otherwise derive from section dimensions using beamOwnDepth = h - slabThickness.
     const calculatedIcoef =
       b > 0 && h > 0 && Icoef === 1
         ? SectionUtils.momentOfInertia(b, h, slabThickness)

@@ -3,10 +3,27 @@
  */
 export class SectionUtils {
   /**
+   * Beam own depth (web depth) used for beam-section inertia.
+   * beamOwnDepth = overallDepth - slabThickness
+   */
+  static calculateBeamOwnDepth(
+    overallDepth: number,
+    slabThickness: number = 0,
+  ): number {
+    const beamOwnDepth = overallDepth - slabThickness;
+    if (beamOwnDepth <= 0) {
+      throw new Error(
+        `Invalid section depth: beamOwnDepth must be > 0 (overallDepth=${overallDepth}, slabThickness=${slabThickness}).`,
+      );
+    }
+    return beamOwnDepth;
+  }
+
+  /**
    * Calculates the Moment of Inertia (I) for a rectangular section.
-   * I = (b * (h - slabThickness)^3) / 12
+   * I = (b * beamOwnDepth^3) / 12
    * @param b Width of the section
-   * @param h Height (Total Depth) of the section
+   * @param h Height (overall depth) of the section
    * @param slabThickness Thickness of the slab (default 0)
    */
   static momentOfInertia(
@@ -14,8 +31,8 @@ export class SectionUtils {
     h: number,
     slabThickness: number = 0,
   ): number {
-    const effectiveDepth = h - slabThickness;
-    return (b * Math.pow(effectiveDepth, 3)) / 12;
+    const beamOwnDepth = this.calculateBeamOwnDepth(h, slabThickness);
+    return (b * Math.pow(beamOwnDepth, 3)) / 12;
   }
 
   /**

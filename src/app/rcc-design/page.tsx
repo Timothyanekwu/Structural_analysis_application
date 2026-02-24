@@ -3,21 +3,25 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { RCCDesignFormulaes } from "@_lib/RCCDesign/RCCDesignFormulaes";
+import type {
+  FlexuralZoneDesignResult,
+  SpanSectionType,
+} from "@_lib/RCCDesign/RCCDesignFormulaes";
 import { designShortBracedColumn } from "@_lib/RCCDesign/columnDesign";
-
-type BeamType = "Rectangular" | "L" | "T";
 
 export default function RCCDesignPage() {
   const [fcu, setFcu] = useState(30);
   const [fy, setFy] = useState(460);
 
-  const [beamType, setBeamType] = useState<BeamType>("Rectangular");
+  const [spanSectionType, setSpanSectionType] =
+    useState<SpanSectionType>("T");
   const [b, setB] = useState(250);
   const [h, setH] = useState(500);
   const [cover, setCover] = useState(25);
   const [linkDia, setLinkDia] = useState(10);
   const [mainBarDia, setMainBarDia] = useState(16);
-  const [designMoment, setDesignMoment] = useState(120);
+  const [supportMoment, setSupportMoment] = useState(120);
+  const [spanMoment, setSpanMoment] = useState(120);
   const [continuousSpanMm, setContinuousSpanMm] = useState(5000);
 
   const [columnLoad, setColumnLoad] = useState(1200);
@@ -28,67 +32,43 @@ export default function RCCDesignPage() {
   const beamDesign = useMemo(() => {
     try {
       const rcc = new RCCDesignFormulaes(fcu, fy);
-      const d = rcc.calculateEffectiveDepth(h, cover, linkDia, mainBarDia);
-      const momentKNm = Math.max(0, designMoment);
-
-      let K = 0;
-      let bf = b;
-      if (beamType === "L" || beamType === "T") {
-        const flanged = rcc.calculateKForFlangedBeam(
-          momentKNm,
-          beamType,
-          b,
-          continuousSpanMm,
-          d,
-        );
-        K = flanged.K;
-        bf = flanged.bf;
-      } else {
-        K = rcc.calculateK(momentKNm, b, d);
-      }
-
-      if (K >= 0.225) {
-        return {
-          ok: false as const,
-          message:
-            "Section is beyond singly-reinforced range for this simplified workflow. Increase section or use doubly-reinforced design.",
-        };
-      }
-
-      const z = rcc.calculateLeverArm(K, d);
-      const x = rcc.calculateNeutralAxisDepth(z, d);
-      const As = rcc.calculateSteelAreaBS8110(momentKNm, z);
-      const AsMin = rcc.calculateAsMin(b, h);
-      const AsMax = rcc.calculateAsMax(b, h);
+      const result = rcc.designBeamByZones({
+        supportMoment,
+        spanMoment,
+        spanSectionType,
+        beamWidth: b,
+        overallDepth: h,
+        concreteCover: cover,
+        linkDiameter: linkDia,
+        mainBarDiameter: mainBarDia,
+        continuousSpanLength:
+          spanSectionType === "L" || spanSectionType === "T"
+            ? continuousSpanMm
+            : undefined,
+      });
 
       return {
-        ok: true as const,
-        d,
-        K,
-        z,
-        x,
-        As,
-        AsMin,
-        AsMax,
-        bf,
+        result,
+        error: null as string | null,
       };
     } catch (error: any) {
       return {
-        ok: false as const,
-        message: error?.message || "Beam design calculation failed.",
+        result: null,
+        error: error?.message || "Beam design calculation failed.",
       };
     }
   }, [
     b,
-    beamType,
     continuousSpanMm,
     cover,
-    designMoment,
     fcu,
     fy,
     h,
     linkDia,
     mainBarDia,
+    spanMoment,
+    spanSectionType,
+    supportMoment,
   ]);
 
   const columnDesign = useMemo(() => {
@@ -145,12 +125,12 @@ export default function RCCDesignPage() {
           </h2>
 
           <div className="grid grid-cols-2 gap-3">
-            <LabeledNumber label="fcu (N/mm²)" value={fcu} onChange={setFcu} />
-            <LabeledNumber label="fy (N/mm²)" value={fy} onChange={setFy} />
+            <LabeledNumber label="fcu (N/mm^2)" value={fcu} onChange={setFcu} />
+            <LabeledNumber label="fy (N/mm^2)" value={fy} onChange={setFy} />
             <LabeledSelect
-              label="Beam Type"
-              value={beamType}
-              onChange={(v) => setBeamType(v as BeamType)}
+              label="Span Section Type"
+              value={spanSectionType}
+              onChange={(v) => setSpanSectionType(v as SpanSectionType)}
               options={["Rectangular", "L", "T"]}
             />
             <LabeledNumber label="bw (mm)" value={b} onChange={setB} />
@@ -167,11 +147,16 @@ export default function RCCDesignPage() {
               onChange={setMainBarDia}
             />
             <LabeledNumber
-              label="Design Moment (kNm)"
-              value={designMoment}
-              onChange={setDesignMoment}
+              label="Support Moment |Mu-| (kNm)"
+              value={supportMoment}
+              onChange={setSupportMoment}
             />
-            {(beamType === "L" || beamType === "T") && (
+            <LabeledNumber
+              label="Span Moment |Mu+| (kNm)"
+              value={spanMoment}
+              onChange={setSpanMoment}
+            />
+            {(spanSectionType === "L" || spanSectionType === "T") && (
               <LabeledNumber
                 label="Continuous Span (mm)"
                 value={continuousSpanMm}
@@ -181,19 +166,70 @@ export default function RCCDesignPage() {
           </div>
 
           <div className="mt-5 rounded-2xl border border-white/10 bg-black/30 p-4 text-xs">
-            {!beamDesign.ok && (
-              <p className="font-bold text-amber-300">{beamDesign.message}</p>
+            {beamDesign.error && (
+              <p className="font-bold text-amber-300">{beamDesign.error}</p>
             )}
-            {beamDesign.ok && (
-              <div className="grid grid-cols-2 gap-y-2">
-                <Stat label="Effective depth d" value={`${beamDesign.d.toFixed(2)} mm`} />
-                <Stat label="K factor" value={beamDesign.K.toFixed(4)} />
-                <Stat label="Lever arm z" value={`${beamDesign.z.toFixed(2)} mm`} />
-                <Stat label="Neutral axis x" value={`${beamDesign.x.toFixed(2)} mm`} />
-                <Stat label="Required As" value={`${beamDesign.As.toFixed(2)} mm²`} />
-                <Stat label="As,min" value={`${beamDesign.AsMin.toFixed(2)} mm²`} />
-                <Stat label="As,max" value={`${beamDesign.AsMax.toFixed(2)} mm²`} />
-                <Stat label="Effective bf" value={`${beamDesign.bf.toFixed(2)} mm`} />
+
+            {beamDesign.result && (
+              <div className="space-y-4">
+                {!beamDesign.result.ok && beamDesign.result.messages.length > 0 && (
+                  <div className="space-y-1">
+                    {beamDesign.result.messages.map((message, idx) => (
+                      <p key={idx} className="font-bold text-amber-300">
+                        {message}
+                      </p>
+                    ))}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-y-2">
+                  <Stat
+                    label="Effective depth d"
+                    value={`${beamDesign.result.d.toFixed(2)} mm`}
+                  />
+                  <Stat
+                    label="As,min"
+                    value={`${beamDesign.result.AsMin.toFixed(2)} mm^2`}
+                  />
+                  <Stat
+                    label="As,max"
+                    value={`${beamDesign.result.AsMax.toFixed(2)} mm^2`}
+                  />
+                  <Stat
+                    label="Top steel (support)"
+                    value={formatNullable(beamDesign.result.topSteelRequired, "mm^2")}
+                  />
+                  <Stat
+                    label="Bottom steel (span)"
+                    value={formatNullable(
+                      beamDesign.result.bottomSteelRequired,
+                      "mm^2",
+                    )}
+                  />
+                  <Stat
+                    label="Governing steel"
+                    value={formatNullable(
+                      beamDesign.result.governingSteelRequired,
+                      "mm^2",
+                    )}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 gap-3">
+                  <ZoneCard
+                    title="Support Zone (Rectangular)"
+                    zone={beamDesign.result.support}
+                  />
+                  <ZoneCard
+                    title={`Span Zone (${beamDesign.result.span.sectionType})`}
+                    zone={beamDesign.result.span}
+                  />
+                </div>
+
+                <p className="text-[10px] text-gray-500">
+                  Support zone is always designed as rectangular. Span zone uses
+                  the selected section type.
+                </p>
               </div>
             )}
           </div>
@@ -225,14 +261,16 @@ export default function RCCDesignPage() {
               value={columnClearHeight}
               onChange={setColumnClearHeight}
             />
-            <LabeledNumber label="fcu (N/mm²)" value={fcu} onChange={setFcu} />
-            <LabeledNumber label="fy (N/mm²)" value={fy} onChange={setFy} />
+            <LabeledNumber label="fcu (N/mm^2)" value={fcu} onChange={setFcu} />
+            <LabeledNumber label="fy (N/mm^2)" value={fy} onChange={setFy} />
           </div>
 
           <div className="mt-5 rounded-2xl border border-white/10 bg-black/30 p-4 text-xs">
             <p
               className={`font-black uppercase tracking-widest ${
-                columnDesign.status === "SUCCESS" ? "text-emerald-300" : "text-amber-300"
+                columnDesign.status === "SUCCESS"
+                  ? "text-emerald-300"
+                  : "text-amber-300"
               }`}
             >
               {columnDesign.status}
@@ -242,7 +280,7 @@ export default function RCCDesignPage() {
               <div className="mt-3 grid grid-cols-2 gap-y-2">
                 <Stat
                   label="Required Asc"
-                  value={`${columnDesign.steelRequiredArea ?? 0} mm²`}
+                  value={`${columnDesign.steelRequiredArea ?? 0} mm^2`}
                 />
                 <Stat
                   label="Provided Steel"
@@ -250,7 +288,7 @@ export default function RCCDesignPage() {
                 />
                 <Stat
                   label="Provided Area"
-                  value={`${columnDesign.providedArea ?? 0} mm²`}
+                  value={`${columnDesign.providedArea ?? 0} mm^2`}
                 />
                 <Stat label="Links" value={columnDesign.links ?? "-"} />
                 <Stat
@@ -327,5 +365,53 @@ function Stat({ label, value }: { label: string; value: string }) {
       <span className="text-gray-500">{label}</span>
       <span className="font-bold text-gray-200">{value}</span>
     </>
+  );
+}
+
+function formatNullable(
+  value: number | null,
+  unit: string,
+  digits = 2,
+): string {
+  if (value === null) return "-";
+  return `${value.toFixed(digits)} ${unit}`;
+}
+
+function ZoneCard({
+  title,
+  zone,
+}: {
+  title: string;
+  zone: FlexuralZoneDesignResult;
+}) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">
+          {title}
+        </p>
+        <span
+          className={`text-[10px] font-black uppercase tracking-widest ${
+            zone.ok ? "text-emerald-300" : "text-amber-300"
+          }`}
+        >
+          {zone.ok ? "OK" : "CHECK"}
+        </span>
+      </div>
+
+      {!zone.ok && zone.message && (
+        <p className="mb-2 text-[10px] font-bold text-amber-300">{zone.message}</p>
+      )}
+
+      <div className="grid grid-cols-2 gap-y-1 text-[11px]">
+        <Stat label="|Mu|" value={`${zone.designMoment.toFixed(2)} kNm`} />
+        <Stat label="Section width used" value={`${zone.sectionWidthUsed.toFixed(2)} mm`} />
+        <Stat label="bf" value={formatNullable(zone.bf, "mm")} />
+        <Stat label="K" value={zone.K === null ? "-" : zone.K.toFixed(4)} />
+        <Stat label="z" value={formatNullable(zone.z, "mm")} />
+        <Stat label="x" value={formatNullable(zone.x, "mm")} />
+        <Stat label="As required" value={formatNullable(zone.As, "mm^2")} />
+      </div>
+    </div>
   );
 }

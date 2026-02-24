@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import StructurePreview, { Member, Load } from "./StructurePreview";
 import UnitInput from "./UnitInput";
+import { SectionUtils } from "@_lib/elements/section_utils";
 import {
   ElasticModulusUnit,
   ForceUnit,
@@ -256,6 +257,35 @@ export default function MemberForm({
       }
     }
   }, [endNodeIdx, existingNodes, nodeSupports, memberType]);
+
+  // In Design mode, keep I synced from section geometry.
+  useEffect(() => {
+    if (!isDesignMode || isIConstant) return;
+
+    const b = Number(sectionProps.b);
+    const h = Number(sectionProps.h);
+    const slabThickness =
+      memberType === "Beam" ? Number(sectionProps.slabThickness || 0) : 0;
+
+    if (!Number.isFinite(b) || !Number.isFinite(h) || b <= 0 || h <= 0) {
+      setIcoef("");
+      return;
+    }
+
+    try {
+      const autoI = SectionUtils.momentOfInertia(b, h, slabThickness);
+      setIcoef(autoI);
+    } catch {
+      setIcoef("");
+    }
+  }, [
+    isDesignMode,
+    isIConstant,
+    memberType,
+    sectionProps.b,
+    sectionProps.h,
+    sectionProps.slabThickness,
+  ]);
 
   const addLoad = () => {
     if (newLoad.value === "") return;
@@ -838,9 +868,10 @@ export default function MemberForm({
                   </button>
                 </div>
                 <p className="sm:col-span-2 text-[9px] text-gray-600 leading-relaxed px-1">
-                  Enable constant mode to lock the value at 1 regardless of
-                  selected units. In Analysis mode, provide I explicitly if
-                  constant mode is off.
+                  In Design mode, I auto-updates from geometry (using beam own
+                  depth = h - slab thickness for beams). Enable constant mode
+                  to lock the value at 1. In Analysis mode, provide I
+                  explicitly if constant mode is off.
                 </p>
               </div>
             </div>
