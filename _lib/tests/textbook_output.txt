@@ -1,0 +1,31 @@
+isSideSway: true
+
+--- SOLVING MOMENTS ---
+Computed moments: {
+  MOMENTAB: -36.57142857142854,
+  MOMENTBA: -73.14285714285712,
+  MOMENTBC: 73.14285714285714,
+  MOMENTCB: -73.14285714285717,
+  MOMENTCD: 73.14285714285715,
+  MOMENTDC: 36.5714285714286
+}
+
+--- COMPARISON ---
+  MOMENTAB: got=-36.57, expected=22.9, diff=59.47 ??? FAIL
+  MOMENTBA: got=-73.14, expected=45.7, diff=118.84 ??? FAIL
+  MOMENTBC: got=73.14, expected=-45.7, diff=118.84 ??? FAIL
+  MOMENTCB: got=-73.14, expected=45.7, diff=118.84 ??? FAIL
+  MOMENTCD: got=73.14, expected=-45.7, diff=118.84 ??? FAIL
+  MOMENTDC: got=36.57, expected=-22.9, diff=59.47 ??? FAIL
+
+--- SOLVING REACTIONS ---
+Col AB: RxStart=-9.143, RxEnd=9.143
+Beam BC: RyStart=96.000, RyEnd=96.000
+Col DC: RxStart=9.143, RxEnd=-9.143
+Reactions: {
+  A: { xReaction: -9.142857142857139, yReaction: 96 },
+  D: { xReaction: 9.142857142857146, yReaction: 96 }
+}
+
+??Rx = 0.0000 (expected 0)
+??Ry = 192.0000 (expected 192)

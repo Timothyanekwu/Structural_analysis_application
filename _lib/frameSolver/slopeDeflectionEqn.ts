@@ -301,6 +301,9 @@ export class SlopeDeflection {
   private getColumnSwayTerms(member: Column): Term[] {
     const { L, EI } = this.getMemberFactors(member);
     const coeff = (6 * EI) / (L * L);
+    // Keep sway coupling invariant to member drawing direction.
+    const orientationSign =
+      member.endNode.y >= member.startNode.y ? 1 : -1;
 
     const startVar = this.swayVar(member.startNode);
     const endVar = this.swayVar(member.endNode);
@@ -309,8 +312,12 @@ export class SlopeDeflection {
     // Slope-deflection sway term for columns: +/- (6EI/L^2) * DELTA_group.
     // Using the same reference convention at both ends avoids accidental
     // cancellation in symmetric layouts.
-    if (startVar) terms.push({ name: startVar, coefficient: coeff });
-    if (endVar) terms.push({ name: endVar, coefficient: -coeff });
+    if (startVar) {
+      terms.push({ name: startVar, coefficient: coeff * orientationSign });
+    }
+    if (endVar) {
+      terms.push({ name: endVar, coefficient: -coeff * orientationSign });
+    }
     return terms;
   }
 
@@ -412,22 +419,28 @@ export class SlopeDeflection {
     const loads = member.getEquivalentPointLoads();
     const totalLoad = loads.reduce((s, l) => s + l.magnitude, 0);
     const loadMoments = loads.reduce((s, l) => s + l.magnitude * l.position, 0);
+    // Keep shear-equation sign invariant to column start/end orientation.
+    const orientationSign =
+      member.endNode.y >= member.startNode.y ? 1 : -1;
 
     const mStart = this.getEndMomentTerms(member, member.startNode);
     const mEnd = this.getEndMomentTerms(member, member.endNode);
 
     if (atNode === member.startNode) {
       return [
-        ...this.scaleTerms(mStart, 1 / L),
-        ...this.scaleTerms(mEnd, 1 / L),
-        { name: "c", coefficient: totalLoad - loadMoments / L },
+        ...this.scaleTerms(mStart, orientationSign / L),
+        ...this.scaleTerms(mEnd, orientationSign / L),
+        {
+          name: "c",
+          coefficient: orientationSign * (totalLoad - loadMoments / L),
+        },
       ];
     }
 
     return [
-      ...this.scaleTerms(mStart, -1 / L),
-      ...this.scaleTerms(mEnd, -1 / L),
-      { name: "c", coefficient: loadMoments / L },
+      ...this.scaleTerms(mStart, -orientationSign / L),
+      ...this.scaleTerms(mEnd, -orientationSign / L),
+      { name: "c", coefficient: orientationSign * (loadMoments / L) },
     ];
   }
 
@@ -457,7 +470,7 @@ export class SlopeDeflection {
 
       const eq = this.collectLikeTerms(terms);
       if (groupFxLoad) {
-        eq.c = (eq.c ?? 0) - groupFxLoad;
+        eq.c = (eq.c ?? 0) + groupFxLoad;
       }
       if (Object.keys(eq).length > 0) {
         eqns.push(eq);

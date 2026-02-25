@@ -1,0 +1,30 @@
+=== SWAY CLASSIFICATION ===
+isSideSway: true
+Nodes: [ 'A', 'B', 'C', 'D' ]
+Supports: [ 'fixed', 'fixed' ]
+
+=== RAW EQUATIONS ===
+Number of equations: 3
+  Eq 1: {"THETA_B":0.8333333333333333,"DELTA_1":-0.041666666666666664,"c":128.00000000000006,"THETA_C":0.25}
+  Eq 2: {"c":-127.99999999999997,"THETA_C":0.8333333333333333,"THETA_B":0.25,"DELTA_1":-0.041666666666666664}
+  Eq 3: {"THETA_B":-0.041666666666666664,"DELTA_1":0.013888888888888888,"THETA_C":-0.041666666666666664}
+
+=== SUPPORT MOMENTS (symbolic) ===
+  MOMENTAB: [{"name":"c","coefficient":0},{"name":"THETA_B","coefficient":0.16666666666666666},{"name":"DELTA_1","coefficient":-0.041666666666666664}]
+  MOMENTBA: [{"name":"c","coefficient":0},{"name":"THETA_B","coefficient":0.3333333333333333},{"name":"DELTA_1","coefficient":-0.041666666666666664}]
+  MOMENTBC: [{"name":"c","coefficient":128.00000000000006},{"name":"THETA_B","coefficient":0.5},{"name":"THETA_C","coefficient":0.25}]
+  MOMENTCB: [{"name":"c","coefficient":-127.99999999999997},{"name":"THETA_C","coefficient":0.5},{"name":"THETA_B","coefficient":0.25}]
+  MOMENTCD: [{"name":"c","coefficient":0},{"name":"THETA_C","coefficient":0.3333333333333333},{"name":"DELTA_1","coefficient":-0.041666666666666664}]
+  MOMENTDC: [{"name":"c","coefficient":0},{"name":"THETA_C","coefficient":0.16666666666666666},{"name":"DELTA_1","coefficient":-0.041666666666666664}]
+
+=== MANUAL VERIFICATION ===
+k_AB = 0.16666666666666666, k_BC = 0.25, k_DC = 0.16666666666666666
+FEM_BC = 128, FEM_CB = -128
+
+Manual ??_B = -109.71, ??_C = 109.71
+M_AB = (1/3)*??_B = -36.57 (expected 22.9)
+M_BA = (2/3)*??_B = -73.14 (expected 45.7)
+M_BC = 128 + ??_B + (1/2)*??_C = 73.14 (expected -45.7)
+M_CB = -128 + ??_C + (1/2)*??_B = -73.14 (expected 45.7)
+M_CD = (2/3)*??_C = 73.14 (expected -45.7)
+M_DC = (1/3)*??_C = 36.57 (expected -22.9)

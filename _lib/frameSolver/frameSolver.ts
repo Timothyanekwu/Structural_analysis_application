@@ -67,7 +67,7 @@ export class FrameSolver {
       );
   }
 
-  isSideSway(): boolean {
+  isSideSwaySusceptible(): boolean {
     const j = this.nodes.length;
     const f = this.supports.filter((s) => s.type === "fixed").length;
     const h = this.supports.filter((s) => s.type === "pinned").length;
@@ -84,6 +84,34 @@ export class FrameSolver {
     // If no support resists global x, frame must be sway.
     if (!hasHorizontalRestraint) return true;
     return ss > 0;
+  }
+
+  /**
+   * Effective sway check for the current loading/model:
+   * - false => no active lateral translation unknown, or solved DELTA ~= 0
+   * - true  => solved DELTA is non-zero
+   *
+   * This differs from pure geometric susceptibility; use
+   * `isSideSwaySusceptible()` for kinematic classification only.
+   */
+  isSideSway(tolerance: number = 1e-9): boolean {
+    this.validateModel();
+    const equations = this.updatedGetEquations();
+    const deltaVars = Array.from(
+      new Set(
+        equations.flatMap((eq) =>
+          Object.keys(eq).filter((k) => k.startsWith("DELTA_")),
+        ),
+      ),
+    );
+
+    if (deltaVars.length === 0) return false;
+
+    const sol = this.equation.solveEquations(equations, {
+      allowLeastSquares: true,
+    });
+
+    return deltaVars.some((name) => Math.abs(sol[name] ?? 0) > tolerance);
   }
 
   updatedGetSupportMoments() {
@@ -192,6 +220,9 @@ export class FrameSolver {
   private computeColumnShear(member: Column, moments: Record<string, number>) {
     const loads = member.getEquivalentPointLoads();
     const L = member.length;
+    // Keep column horizontal shears invariant to member draw direction.
+    const orientationSign =
+      member.endNode.y >= member.startNode.y ? 1 : -1;
 
     const Mstart =
       moments[`MOMENT${member.startNode.id}${member.endNode.id}`] ?? 0;
@@ -202,11 +233,14 @@ export class FrameSolver {
       return sum + load.magnitude * load.position;
     }, 0);
 
-    const RxEnd = (loadMoments - Mend - Mstart) / L;
+    const RxEndRaw = (loadMoments - Mend - Mstart) / L;
     const totalLoad = loads.reduce((s, l) => s + l.magnitude, 0);
-    const RxStart = totalLoad - RxEnd;
+    const RxStartRaw = totalLoad - RxEndRaw;
 
-    return { RxStart, RxEnd };
+    return {
+      RxStart: RxStartRaw * orientationSign,
+      RxEnd: RxEndRaw * orientationSign,
+    };
   }
 
   private solveAxialBalance(axis: "x" | "y") {
