@@ -8,6 +8,12 @@ import { FixedEndMoments } from "../logic/FEMs";
 import { SlopeDeflection } from "./slopeDeflectionEqn";
 import { Equation } from "../logic/simultaneousEqn";
 import { Node } from "../elements/node";
+import { assembleNonSwayEquations } from "./analysisModes/nonSway/equationAssembly";
+import { assembleSwayEquations } from "./analysisModes/sway/equationAssembly";
+import {
+  FrameAnalysisMode,
+  resolveFrameAnalysisMode,
+} from "./analysisModes/resolveAnalysisMode";
 
 export class FrameSolver {
   members: (Beam | Column | InclinedMember)[];
@@ -127,34 +133,23 @@ export class FrameSolver {
     // Rebuild DOF/group mapping before equation assembly to keep state coherent.
     this.slopeDeflection.configureModel(this.nodes, this.members);
 
-    // Joint equations:
-    // - One rotational equilibrium equation per non-fixed joint.
-    // - In non-sway frames these contain THETA_* only.
-    // - In sway frames they can also include DELTA_* terms through columns.
-    const rawJointEqns = this.nodes
-      .filter((node) => node.support?.type !== "fixed")
-      .map((node) => this.slopeDeflection.updatedGetEquations(node));
-    const jointEqns = rawJointEqns.filter((eq) => {
-      const hasVariable = Object.keys(eq).some((k) => k !== "c");
-      if (hasVariable) return true;
-      const c = eq.c ?? 0;
-      if (Math.abs(c) > 1e-9) {
-        throw new Error(
-          `Inconsistent joint equation detected (constant-only residual ${c}).`,
-        );
-      }
-      return false;
-    });
-
-    // Translational equilibrium equations for each free sway group.
-    // Empty for non-sway models (no DELTA unknowns).
-    const swayEqns = this.slopeDeflection.getSwayEquations(
-      this.nodes,
-      this.members,
+    // Mode-dispatched equation assembly keeps sway and non-sway workflows
+    // explicit and separated while preserving one slope-deflection kernel.
+    const mode: FrameAnalysisMode = resolveFrameAnalysisMode(
+      this.isSideSwaySusceptible(),
     );
 
-    // Final simultaneous system: [joint rotation eqns + sway eqns].
-    return [...jointEqns, ...swayEqns];
+    this.log(`Frame equation mode: ${mode}`);
+
+    if (mode === "sway") {
+      return assembleSwayEquations(
+        this.nodes,
+        this.members,
+        this.slopeDeflection,
+      );
+    }
+
+    return assembleNonSwayEquations(this.nodes, this.slopeDeflection);
   }
 
   updatedGetFinalMoments() {
@@ -200,6 +195,8 @@ export class FrameSolver {
   private computeBeamShear(member: Beam, moments: Record<string, number>) {
     const loads = member.getEquivalentPointLoads();
     const L = member.length;
+    // Keep beam vertical shears invariant to member draw direction in global coordinates.
+    const orientationSign = member.endNode.x >= member.startNode.x ? 1 : -1;
 
     const Mstart =
       moments[`MOMENT${member.startNode.id}${member.endNode.id}`] ?? 0;
@@ -210,19 +207,21 @@ export class FrameSolver {
       return sum + load.magnitude * load.position;
     }, 0);
 
-    const RyEnd = (loadMoments - Mend - Mstart) / L;
+    const RyEndRaw = (loadMoments - Mend - Mstart) / L;
     const totalLoad = loads.reduce((s, l) => s + l.magnitude, 0);
-    const RyStart = totalLoad - RyEnd;
+    const RyStartRaw = totalLoad - RyEndRaw;
 
-    return { RyStart, RyEnd };
+    return {
+      RyStart: RyStartRaw * orientationSign,
+      RyEnd: RyEndRaw * orientationSign,
+    };
   }
 
   private computeColumnShear(member: Column, moments: Record<string, number>) {
     const loads = member.getEquivalentPointLoads();
     const L = member.length;
     // Keep column horizontal shears invariant to member draw direction.
-    const orientationSign =
-      member.endNode.y >= member.startNode.y ? 1 : -1;
+    const orientationSign = member.endNode.y >= member.startNode.y ? 1 : -1;
 
     const Mstart =
       moments[`MOMENT${member.startNode.id}${member.endNode.id}`] ?? 0;
@@ -314,7 +313,7 @@ export class FrameSolver {
 
     for (const node of this.nodes) {
       node.xReaction = -node.xLoad;
-      node.yReaction = node.yLoad;
+      node.yReaction = -node.yLoad;
     }
     for (const m of this.members) {
       m.endReactions = { RxStart: 0, RyStart: 0, RxEnd: 0, RyEnd: 0 };
@@ -353,7 +352,7 @@ export class FrameSolver {
     const results = new Map<string, { xReaction: number; yReaction: number }>();
     for (const node of this.nodes.filter((n) => !!n.support)) {
       let xReaction = -node.xLoad;
-      let yReaction = node.yLoad;
+      let yReaction = -node.yLoad;
 
       for (const conn of node.connectedMembers) {
         const m = conn.member;

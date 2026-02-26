@@ -1,0 +1,28 @@
+=== SWAY SUSCEPTIBLE === true
+
+=== FEMs ===
+AD start (A): -33.333333333333336
+AD end (D): 16.666666666666668
+DC start (D): 99.99999999999996
+DC end (C): -100.00000000000001
+DE start (D): 6.249999999999997
+DE end (E): -6.250000000000001
+
+=== MOMENTS ===
+{
+  MOMENTAD: -1.4210854715202004e-14,
+  MOMENTDA: -74.99999999999994,
+  MOMENTDC: 37.49999999999994,
+  MOMENTDE: 37.5,
+  MOMENTCD: 0,
+  MOMENTED: 0
+}
+
+=== REACTIONS ===
+Col AD: RxStart=-15.000, RxEnd=-0.000
+Beam DC: RyStart=31.875, RyEnd=28.125
+Beam DE: RyStart=15.000, RyEnd=0.000
+Map(2) {
+  'A' => { xReaction: -14.999999999999996, yReaction: 46.875 },
+  'C' => { xReaction: 0, yReaction: 28.125 }
+}

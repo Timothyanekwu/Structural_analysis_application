@@ -1,0 +1,32 @@
+isSideSwaySusceptible: true
+isSideSway (effective): false
+
+--- SOLVING MOMENTS ---
+Solver moments (internal sign): {
+  MOMENTAB: -22.857142857142847,
+  MOMENTBA: -45.714285714285694,
+  MOMENTBC: 45.71428571428568,
+  MOMENTCB: -45.7142857142857,
+  MOMENTCD: 45.7142857142857,
+  MOMENTDC: 22.85714285714285
+}
+
+--- COMPARISON (Textbook Sign) ---
+  MOMENTAB: got=22.86, expected=22.9, diff=0.04 -> PASS
+  MOMENTBA: got=45.71, expected=45.7, diff=0.01 -> PASS
+  MOMENTBC: got=-45.71, expected=-45.7, diff=0.01 -> PASS
+  MOMENTCB: got=45.71, expected=45.7, diff=0.01 -> PASS
+  MOMENTCD: got=-45.71, expected=-45.7, diff=0.01 -> PASS
+  MOMENTDC: got=-22.86, expected=-22.9, diff=0.04 -> PASS
+
+--- SOLVING REACTIONS ---
+Col AB: RxStart=-5.714, RxEnd=5.714
+Beam BC: RyStart=48.000, RyEnd=48.000
+Col CD: RxStart=-5.714, RxEnd=5.714
+Reactions: {
+  A: { xReaction: -5.714285714285712, yReaction: 47.99999999999999 },
+  D: { xReaction: 5.714285714285713, yReaction: 48.00000000000001 }
+}
+
+Sum Rx = 0.0000 (expected 0)
+Sum Ry = 96.0000 (expected 96)

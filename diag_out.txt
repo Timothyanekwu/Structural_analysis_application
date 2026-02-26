@@ -1,0 +1,8 @@
+Test 1 (Nodal Loads) Reactions:
+Map(2) {
+  'A1' => { xReaction: -20, yReaction: -10 },
+  'B1' => { xReaction: 0, yReaction: 0 }
+}
+
+Test 2 (Overhang) Reactions:
+Map(1) { 'A2' => { xReaction: 0, yReaction: 10 } }
