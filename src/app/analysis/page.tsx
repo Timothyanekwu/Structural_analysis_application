@@ -150,28 +150,23 @@ function AnalysisContent() {
   }, [members]);
 
   const supportResolution = useMemo(() => {
-    const supports: Record<string, { type: string; settlement: number }> = {};
+    const supports: Record<string, { type: string }> = {};
     const conflicts: string[] = [];
-    const tol = 1e-9;
 
     const register = (
       key: string,
       nodeLabel: string,
       type: string,
-      settlement: number,
       memberIndex: number,
     ) => {
       const existing = supports[key];
       if (!existing) {
-        supports[key] = { type, settlement };
+        supports[key] = { type };
         return;
       }
-      if (
-        existing.type !== type ||
-        Math.abs(existing.settlement - settlement) > tol
-      ) {
+      if (existing.type !== type) {
         conflicts.push(
-          `${nodeLabel}: member ${memberIndex + 1} has ${type} (settlement=${settlement}), existing is ${existing.type} (settlement=${existing.settlement})`,
+          `${nodeLabel}: member ${memberIndex + 1} has ${type}, existing is ${existing.type}`,
         );
       }
     };
@@ -179,19 +174,12 @@ function AnalysisContent() {
     members.forEach((m, memberIndex) => {
       const sKey = JSON.stringify(m.startNode);
       const eKey = JSON.stringify(m.endNode);
-      const sSettlement = m.includeSettlements
-        ? m.supports.startSettlement || 0
-        : 0;
-      const eSettlement = m.includeSettlements
-        ? m.supports.endSettlement || 0
-        : 0;
 
       if (m.supports.start !== "None") {
         register(
           sKey,
           `(${m.startNode.x}, ${m.startNode.y})`,
           m.supports.start,
-          sSettlement,
           memberIndex,
         );
       }
@@ -200,7 +188,6 @@ function AnalysisContent() {
           eKey,
           `(${m.endNode.x}, ${m.endNode.y})`,
           m.supports.end,
-          eSettlement,
           memberIndex,
         );
       }
@@ -218,74 +205,35 @@ function AnalysisContent() {
         fx: number;
         fy: number;
         mz: number;
-        imposedDx: number;
-        imposedDy: number;
       }
     > = {};
-    const conflicts: string[] = [];
-    const tol = 1e-9;
 
     const register = (
       key: string,
-      nodeLabel: string,
       joint: FrontJointAction | undefined,
-      memberIndex: number,
     ) => {
       const j = joint || {};
       const fx = Number(j.fx ?? 0);
       const fy = Number(j.fy ?? 0);
       const mz = Number(j.mz ?? 0);
-      const imposedDx = Number(j.imposedDx ?? 0);
-      const imposedDy = Number(j.imposedDy ?? 0);
 
       if (!actions[key]) {
-        actions[key] = { fx: 0, fy: 0, mz: 0, imposedDx: 0, imposedDy: 0 };
+        actions[key] = { fx: 0, fy: 0, mz: 0 };
       }
 
       actions[key].fx += fx;
       actions[key].fy += fy;
       actions[key].mz += mz;
-
-      const mergeImposed = (axis: "imposedDx" | "imposedDy") => {
-        const incoming = axis === "imposedDx" ? imposedDx : imposedDy;
-        const existing = actions[key][axis];
-
-        if (Math.abs(existing) <= tol) {
-          actions[key][axis] = incoming;
-          return;
-        }
-        if (Math.abs(incoming) <= tol) {
-          return;
-        }
-        if (Math.abs(existing - incoming) > tol) {
-          conflicts.push(
-            `${nodeLabel}: conflicting ${axis} at member ${memberIndex + 1} (existing=${existing}, incoming=${incoming})`,
-          );
-        }
-      };
-
-      mergeImposed("imposedDx");
-      mergeImposed("imposedDy");
     };
 
-    members.forEach((m, memberIndex) => {
+    members.forEach((m) => {
       const sKey = JSON.stringify(m.startNode);
       const eKey = JSON.stringify(m.endNode);
-      register(
-        sKey,
-        `(${m.startNode.x}, ${m.startNode.y})`,
-        m.jointActions?.start,
-        memberIndex,
-      );
-      register(
-        eKey,
-        `(${m.endNode.x}, ${m.endNode.y})`,
-        m.jointActions?.end,
-        memberIndex,
-      );
+      register(sKey, m.jointActions?.start);
+      register(eKey, m.jointActions?.end);
     });
 
-    return { actions, conflicts };
+    return { actions };
   }, [members]);
 
   const toDisplayForce = (value: number) =>
@@ -350,11 +298,6 @@ function AnalysisContent() {
           `Conflicting support assignments detected:\n${supportResolution.conflicts.join("\n")}`,
         );
       }
-      if (jointActionResolution.conflicts.length) {
-        throw new Error(
-          `Conflicting imposed joint displacements detected:\n${jointActionResolution.conflicts.join("\n")}`,
-        );
-      }
       if (
         isFrameMode &&
         members.some((m) => (m.memberType || "Beam") === "Inclined")
@@ -372,17 +315,16 @@ function AnalysisContent() {
         const nKey = JSON.stringify(n);
         const supportData = nodeSupports[nKey];
         const supportType = supportData?.type || "None";
-        const settlement = supportData?.settlement || 0;
 
         let support: SolverSupport | null = null;
         if (supportType === "Fixed") {
-          support = new FixedSupport(n.x, n.y, lastSupport, settlement);
+          support = new FixedSupport(n.x, n.y, lastSupport, 0);
           lastSupport = support;
         } else if (supportType === "Pinned") {
-          support = new PinnedSupport(n.x, n.y, lastSupport, settlement);
+          support = new PinnedSupport(n.x, n.y, lastSupport, 0);
           lastSupport = support;
         } else if (supportType === "Roller") {
-          support = new RollerSupport(n.x, n.y, lastSupport, settlement);
+          support = new RollerSupport(n.x, n.y, lastSupport, 0);
           lastSupport = support;
         }
 
@@ -402,12 +344,6 @@ function AnalysisContent() {
           if (nodeJointAction.mz) {
             // Positive nodal moment is anti-clockwise.
             solverNode.addMomentLoad(nodeJointAction.mz);
-          }
-          if (nodeJointAction.imposedDx || nodeJointAction.imposedDy) {
-            solverNode.addImposedDisplacement(
-              nodeJointAction.imposedDx,
-              nodeJointAction.imposedDy,
-            );
           }
         }
         solverNodesMap.set(nKey, solverNode);

@@ -29,70 +29,46 @@ export const calculateDiagramData = (
   const dx = member.endNode.x - member.startNode.x;
   const dy = member.endNode.y - member.startNode.y;
   const L = Math.sqrt(dx * dx + dy * dy);
+  const tol = 1e-9;
 
-  // 1. Resolve Loads into Local Coordinates (Transverse & Axial)
-  // Assuming 'angle' in load is angle w.r.t global X axis?
-  // OR angle w.r.t member axis?
-  // User UI shows "Vector Angle".
-  // Let's assume Global Angle for now, necessitating rotation to local.
-  // Wait, the Load component treats "90" as down perpendicular to beam in visuals usually?
-  // Let's check `StructurePreview` logic for drawing.
-  // In StructurePreview: Angle 90 is drawn perpendicular to line.
-  // So Angle is relative to Member Axis? Or Global?
-  // Checking `StructurePreview`: `angle` is used with `Math.cos(angle)`, `sin`.
-  // If Member is horizontal, 90 is down.
-  // If Member is vertical, 90 is ... right?
-  // Let's assume simpler case: Load Angle is relative to Horizontal (Global).
-  // AND Member Angle is relative to Horizontal.
-  // Then Local Angle = LoadAngle - MemberAngle.
+  // Normalize diagram sign so plotting does not depend on draw direction.
+  // Horizontal members are canonical left->right; vertical members bottom->top.
+  const signNormalization =
+    Math.abs(dx) >= Math.abs(dy)
+      ? dx < -tol
+        ? -1
+        : 1
+      : dy < -tol
+        ? -1
+        : 1;
+
+  // 1. Resolve loads to local transverse/axial using the same mapping
+  // used by the frame solver.
 
   const memberAngle = Math.atan2(dy, dx);
 
   const processedLoads = member.loads.map((l) => {
-    // Default angle 90 (vertical down) if undefined
-    // If user inputs 90, they likely mean "Down" in Global usually.
-    // Let's stick to: Vector Angle is Global Angle. 0 = Right, 90 = Down, 270 = Up.
-    // Visuals in Preview used `(load.angle ?? 90) * (Math.PI / 180)`.
+    // Keep load-component mapping identical to the frame solver path:
+    // fx = mag*cos(angle), fy = -mag*sin(angle) (global +Fy is upward).
+    // Then project to local member axes.
+    const magnitude =
+      l.type === "VDL"
+        ? Number(l.highValue ?? l.value ?? 0)
+        : Number(l.value ?? 0);
+    const angleRad = ((l.angle ?? 90) * Math.PI) / 180;
 
-    // NOTE: In standard Math, 90 is UP. In screen coords (SVG), Y is Down, so 90 is Down.
-    // SVG standard: 0 is Right, 90 is Down.
-    // So 90 degrees = Downward Vertical Load.
+    const fx = magnitude * Math.cos(angleRad);
+    const fy = -magnitude * Math.sin(angleRad);
 
-    const globalLoadAngle = (l.angle ?? 90) * (Math.PI / 180);
-
-    // Project vector onto member (Axial) and Perpendicular (Shear)
-    // Unit vector of member: (cos(theta), sin(theta))
-    // Load Vector L: (cos(phi), sin(phi)) * Magnitude
-    // Axial Component = Dot Product
-    // Shear Component = Cross Product (2D)
-
-    // Member Direction Vector
-    const mx = Math.cos(memberAngle);
-    const my = Math.sin(memberAngle);
-
-    // Load Direction Vector
-    const lx = Math.cos(globalLoadAngle);
-    const ly = Math.sin(globalLoadAngle); // Remember Y is down in SVG, so +sin(90) = +1 (Down)
-
-    // Dot Product (Axial): L . M = lx*mx + ly*my
-    // If aligned, it's compression or tension.
-    // Should be: P pushes on node?
-    // Let's refine simple beam case first (Horizontal).
-    // MemberAngle = 0. mx=1, my=0.
-    // Load 90 (Down). lx=0, ly=1.
-    // Axial = 0*1 + 1*0 = 0.
-    // Shear = ?
-    // We want Transverse component.
-    // Transverse = -lx*my + ly*mx (2D cross product scalar)
-    // = -0*0 + 1*1 = 1. (Positive Load = Downward force).
-
-    const axialComp = l.value * (lx * mx + ly * my);
-    const shearComp = l.value * (-lx * my + ly * mx); // Positive = Downward (acting 'with' gravity)
+    const axialComp =
+      fx * Math.cos(memberAngle) + fy * Math.sin(memberAngle);
+    const shearComp =
+      fx * Math.sin(memberAngle) - fy * Math.cos(memberAngle);
 
     return {
       ...l,
       axialVal: axialComp,
-      shearVal: shearComp, // Magnitude of downward transverse force
+      shearVal: shearComp,
       pos: Number(l.position || 0),
       spanLen: Number(l.span || 0),
       // VDL specific
@@ -299,8 +275,10 @@ export const calculateDiagramData = (
       });
 
       const state = {
+        // Keep shear in member-native direction so endpoint values align
+        // with solver support/joint force signs.
         shear: V0 - loadShear,
-        moment: -results.leftMoment + V0 * x - loadMoment,
+        moment: (-results.leftMoment + V0 * x - loadMoment) * signNormalization,
         axial: P0 - loadAxial,
       };
 

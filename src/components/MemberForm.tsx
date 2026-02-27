@@ -22,8 +22,6 @@ type JointAction = {
   fx: number | "";
   fy: number | "";
   mz: number | "";
-  imposedDx: number | "";
-  imposedDy: number | "";
 };
 
 interface MemberFormProps {
@@ -98,13 +96,6 @@ export default function MemberForm({
     start: SupportType;
     end: SupportType;
   }>(initialData?.supports || { start: "None", end: "None" });
-  const [settlement, setSettlement] = useState<{
-    start: number | "";
-    end: number | "";
-  }>({
-    start: initialData?.supports?.startSettlement || "",
-    end: initialData?.supports?.endSettlement || "",
-  });
 
   const [sectionProps, setSectionProps] = useState<{
     b: number | "";
@@ -155,10 +146,6 @@ export default function MemberForm({
       (initialData?.h ?? 0) > 0 ||
       (initialData?.slabThickness ?? 0) > 0,
   );
-  const [useSettlements, setUseSettlements] = useState<boolean>(
-    (initialData?.supports?.startSettlement ?? 0) !== 0 ||
-      (initialData?.supports?.endSettlement ?? 0) !== 0,
-  );
   const [unitResetSignal, setUnitResetSignal] = useState(0);
   const [jointActions, setJointActions] = useState<{
     start: JointAction;
@@ -168,15 +155,11 @@ export default function MemberForm({
       fx: initialData?.jointActions?.start?.fx ?? "",
       fy: initialData?.jointActions?.start?.fy ?? "",
       mz: initialData?.jointActions?.start?.mz ?? "",
-      imposedDx: initialData?.jointActions?.start?.imposedDx ?? "",
-      imposedDy: initialData?.jointActions?.start?.imposedDy ?? "",
     },
     end: {
       fx: initialData?.jointActions?.end?.fx ?? "",
       fy: initialData?.jointActions?.end?.fy ?? "",
       mz: initialData?.jointActions?.end?.mz ?? "",
-      imposedDx: initialData?.jointActions?.end?.imposedDx ?? "",
-      imposedDy: initialData?.jointActions?.end?.imposedDy ?? "",
     },
   });
 
@@ -221,13 +204,11 @@ export default function MemberForm({
       if (sData) {
         if (typeof sData === "string") {
           setSupports((prev) => ({ ...prev, start: sData as SupportType }));
-          setSettlement((prev) => ({ ...prev, start: "" }));
         } else {
           setSupports((prev) => ({
             ...prev,
             start: sData.type as SupportType,
           }));
-          setSettlement((prev) => ({ ...prev, start: sData.settlement ?? "" }));
         }
       }
     }
@@ -249,10 +230,8 @@ export default function MemberForm({
       if (sData) {
         if (typeof sData === "string") {
           setSupports((prev) => ({ ...prev, end: sData as SupportType }));
-          setSettlement((prev) => ({ ...prev, end: "" }));
         } else {
           setSupports((prev) => ({ ...prev, end: sData.type as SupportType }));
-          setSettlement((prev) => ({ ...prev, end: sData.settlement ?? "" }));
         }
       }
     }
@@ -350,12 +329,6 @@ export default function MemberForm({
           slabThickness: Number(sectionProps.slabThickness || 0),
         }
       : { b: 0, h: 0, slabThickness: 0 };
-    const resolvedSettlements = useSettlements
-      ? {
-          startSettlement: Number(settlement.start || 0),
-          endSettlement: Number(settlement.end || 0),
-        }
-      : { startSettlement: 0, endSettlement: 0 };
     const memberData = {
       startNode: {
         x: Number(startNode.x || 0),
@@ -368,25 +341,21 @@ export default function MemberForm({
       memberType: isBeamMode ? "Beam" : memberType,
       beamSectionType: beamSectionType,
       workflowMode: isDesignMode ? "design" : "analysis",
-      includeSettlements: useSettlements,
       supports: {
         ...supports,
-        ...resolvedSettlements,
+        startSettlement: 0,
+        endSettlement: 0,
       },
       jointActions: {
         start: {
           fx: Number(jointActions.start.fx || 0),
           fy: Number(jointActions.start.fy || 0),
           mz: Number(jointActions.start.mz || 0),
-          imposedDx: Number(jointActions.start.imposedDx || 0),
-          imposedDy: Number(jointActions.start.imposedDy || 0),
         },
         end: {
           fx: Number(jointActions.end.fx || 0),
           fy: Number(jointActions.end.fy || 0),
           mz: Number(jointActions.end.mz || 0),
-          imposedDx: Number(jointActions.end.imposedDx || 0),
-          imposedDy: Number(jointActions.end.imposedDy || 0),
         },
       },
       loads,
@@ -411,26 +380,21 @@ export default function MemberForm({
     memberType: isBeamMode ? "Beam" : memberType,
     beamSectionType: beamSectionType,
     workflowMode: isDesignMode ? "design" : "analysis",
-    includeSettlements: useSettlements,
     supports: {
       ...supports,
-      startSettlement: useSettlements ? Number(settlement.start || 0) : 0,
-      endSettlement: useSettlements ? Number(settlement.end || 0) : 0,
+      startSettlement: 0,
+      endSettlement: 0,
     },
     jointActions: {
       start: {
         fx: Number(jointActions.start.fx || 0),
         fy: Number(jointActions.start.fy || 0),
         mz: Number(jointActions.start.mz || 0),
-        imposedDx: Number(jointActions.start.imposedDx || 0),
-        imposedDy: Number(jointActions.start.imposedDy || 0),
       },
       end: {
         fx: Number(jointActions.end.fx || 0),
         fy: Number(jointActions.end.fy || 0),
         mz: Number(jointActions.end.mz || 0),
-        imposedDx: Number(jointActions.end.imposedDx || 0),
-        imposedDy: Number(jointActions.end.imposedDy || 0),
       },
     },
     loads: loads,
@@ -1172,60 +1136,6 @@ export default function MemberForm({
             </div>
           </div>
           <div className="bg-white/[0.02] border border-white/5 p-4 rounded-2xl space-y-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-orange-400"></div>
-                <span className="text-[9px] font-black uppercase tracking-widest text-gray-500">
-                  Prior Settlements
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() =>
-                  setUseSettlements((prev) => {
-                    const next = !prev;
-                    if (!next) {
-                      setSettlement({ start: "", end: "" });
-                    }
-                    return next;
-                  })
-                }
-                className={`rounded-lg border px-3 py-1.5 text-[9px] font-black uppercase tracking-widest transition-colors ${
-                  useSettlements
-                    ? "border-[var(--primary)] bg-[var(--primary-glow)]/20 text-[var(--primary)]"
-                    : "border-white/10 bg-black/30 text-gray-500 hover:text-gray-300"
-                }`}
-              >
-                {useSettlements ? "Enabled" : "Disabled"}
-              </button>
-            </div>
-
-            {useSettlements && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <UnitInput
-                  unitType="length"
-                  preferredUnit={defaultUnits.length}
-                  resetSignal={unitResetSignal}
-                  value={settlement.start}
-                  onChange={(val) =>
-                    setSettlement({ ...settlement, start: val })
-                  }
-                  label="Start Node Settlement"
-                  placeholder="0.00"
-                />
-                <UnitInput
-                  unitType="length"
-                  preferredUnit={defaultUnits.length}
-                  resetSignal={unitResetSignal}
-                  value={settlement.end}
-                  onChange={(val) => setSettlement({ ...settlement, end: val })}
-                  label="End Node Settlement"
-                  placeholder="0.00"
-                />
-              </div>
-            )}
-          </div>
-          <div className="bg-white/[0.02] border border-white/5 p-4 rounded-2xl space-y-4">
             <div className="flex items-center gap-2">
               <div className="w-1.5 h-1.5 rounded-full bg-blue-400"></div>
               <span className="text-[9px] font-black uppercase tracking-widest text-gray-500">
@@ -1279,34 +1189,6 @@ export default function MemberForm({
                   label="Mz"
                   placeholder="0.00"
                 />
-                <UnitInput
-                  unitType="length"
-                  preferredUnit={defaultUnits.length}
-                  resetSignal={unitResetSignal}
-                  value={jointActions.start.imposedDx}
-                  onChange={(val) =>
-                    setJointActions((prev) => ({
-                      ...prev,
-                      start: { ...prev.start, imposedDx: val },
-                    }))
-                  }
-                  label="Imposed dx"
-                  placeholder="0.00"
-                />
-                <UnitInput
-                  unitType="length"
-                  preferredUnit={defaultUnits.length}
-                  resetSignal={unitResetSignal}
-                  value={jointActions.start.imposedDy}
-                  onChange={(val) =>
-                    setJointActions((prev) => ({
-                      ...prev,
-                      start: { ...prev.start, imposedDy: val },
-                    }))
-                  }
-                  label="Imposed dy"
-                  placeholder="0.00"
-                />
               </div>
               <div className="space-y-3 rounded-xl border border-white/10 bg-black/20 p-3">
                 <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">
@@ -1354,40 +1236,11 @@ export default function MemberForm({
                   label="Mz"
                   placeholder="0.00"
                 />
-                <UnitInput
-                  unitType="length"
-                  preferredUnit={defaultUnits.length}
-                  resetSignal={unitResetSignal}
-                  value={jointActions.end.imposedDx}
-                  onChange={(val) =>
-                    setJointActions((prev) => ({
-                      ...prev,
-                      end: { ...prev.end, imposedDx: val },
-                    }))
-                  }
-                  label="Imposed dx"
-                  placeholder="0.00"
-                />
-                <UnitInput
-                  unitType="length"
-                  preferredUnit={defaultUnits.length}
-                  resetSignal={unitResetSignal}
-                  value={jointActions.end.imposedDy}
-                  onChange={(val) =>
-                    setJointActions((prev) => ({
-                      ...prev,
-                      end: { ...prev.end, imposedDy: val },
-                    }))
-                  }
-                  label="Imposed dy"
-                  placeholder="0.00"
-                />
               </div>
             </div>
           </div>
           <p className="text-[10px] text-gray-600 italic px-2 leading-relaxed">
-            Supports sync from linked nodes. Settlements are optional and stay
-            zero unless enabled.
+            Supports sync from linked nodes. Joint actions are Fx, Fy, and Mz.
           </p>
         </section>
 

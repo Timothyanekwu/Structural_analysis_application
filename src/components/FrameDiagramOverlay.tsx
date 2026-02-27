@@ -91,6 +91,20 @@ export default function FrameDiagramOverlay({
     // For SVG: Y increases downward, so perpendicular is (-alongY, alongX)
     const perpX = -alongY;
     const perpY = alongX;
+    const tol = 1e-9;
+
+    // Keep plotted diagram orientation invariant to node draw direction.
+    // Horizontal members are canonical left->right; vertical bottom->top.
+    const plotSign =
+      Math.abs(dx) >= Math.abs(dy)
+        ? dx < -tol
+          ? -1
+          : 1
+        : dy < -tol
+          ? -1
+          : 1;
+    const plotPerpX = perpX * plotSign;
+    const plotPerpY = perpY * plotSign;
 
     // Generate path for BMD
     const generatePath = (
@@ -130,8 +144,8 @@ export default function FrameDiagramOverlay({
 
         // Offset perpendicular to member (negative for BMD convention)
         const offset = -value * scaleFactor;
-        const px = baseX + perpX * offset;
-        const py = baseY + perpY * offset;
+        const px = baseX + plotPerpX * offset;
+        const py = baseY + plotPerpY * offset;
 
         fillPoints.push(`L ${px.toFixed(2)} ${py.toFixed(2)}`);
         
@@ -236,16 +250,16 @@ export default function FrameDiagramOverlay({
 	                {label.type !== 'inflection' && (
 	                    <g>
 	                        <rect 
-                            x={label.x + perpX * 8 - 14} 
-                            y={label.y + perpY * 8 - 9} 
+                            x={label.x + plotPerpX * 8 - 14} 
+                            y={label.y + plotPerpY * 8 - 9} 
                             width="28" 
                             height="18" 
                             rx="4" 
                             fill="rgba(0,0,0,0.7)" 
                         />
 	                        <text
-	                        x={label.x + perpX * 8}
-	                        y={label.y + perpY * 8}
+	                        x={label.x + plotPerpX * 8}
+	                        y={label.y + plotPerpY * 8}
 	                        fill="white"
 	                        fontSize="9"
 	                        fontWeight="bold"
@@ -280,8 +294,8 @@ export default function FrameDiagramOverlay({
         const baseY = y1 + t * (y2 - y1);
         const offset = -point[key] * sFactor;
         return {
-            x: baseX + perpX * offset,
-            y: baseY + perpY * offset
+            x: baseX + plotPerpX * offset,
+            y: baseY + plotPerpY * offset
         };
     };
 

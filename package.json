@@ -10,8 +10,9 @@
     "type-check": "tsc --noEmit",
     "test:lib:beam": "node scripts/run-lib-test.cjs _lib/tests/BeamDeterminateRegression.ts",
     "test:lib:frame": "node scripts/run-lib-test.cjs _lib/tests/UserFrameModel.ts",
+    "test:lib:frame:verify": "node scripts/run-lib-test.cjs _lib/tests/FrameSolverVerification.ts",
     "test:lib:rcc": "node scripts/run-lib-test.cjs _lib/tests/BeamRCCIntegration.ts",
-    "test": "npm run test:lib:beam && npm run test:lib:frame && npm run test:lib:rcc"
+    "test": "npm run test:lib:beam && npm run test:lib:frame && npm run test:lib:frame:verify && npm run test:lib:rcc"
   },
   "dependencies": {
     "mathjs": "^14.0.1",

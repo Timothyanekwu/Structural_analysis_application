@@ -120,9 +120,20 @@ export class FrameSolver {
     return deltaVars.some((name) => Math.abs(sol[name] ?? 0) > tolerance);
   }
 
+  private getAnalysisMode(): FrameAnalysisMode {
+    return resolveFrameAnalysisMode(this.isSideSwaySusceptible());
+  }
+
+  private configureSlopeDeflectionForMode(mode: FrameAnalysisMode) {
+    this.slopeDeflection.configureModel(this.nodes, this.members, {
+      enableSway: mode === "sway",
+    });
+  }
+
   updatedGetSupportMoments() {
+    const mode = this.getAnalysisMode();
     // Prepare per-node/group DOF mapping and displacement compatibility first.
-    this.slopeDeflection.configureModel(this.nodes, this.members);
+    this.configureSlopeDeflectionForMode(mode);
     // Returns symbolic end-moment term maps (not yet numerically evaluated).
     return this.nodes.map((node) =>
       this.slopeDeflection.updatedSupportEquation(node),
@@ -130,15 +141,12 @@ export class FrameSolver {
   }
 
   updatedGetEquations() {
+    const mode: FrameAnalysisMode = this.getAnalysisMode();
     // Rebuild DOF/group mapping before equation assembly to keep state coherent.
-    this.slopeDeflection.configureModel(this.nodes, this.members);
+    this.configureSlopeDeflectionForMode(mode);
 
     // Mode-dispatched equation assembly keeps sway and non-sway workflows
     // explicit and separated while preserving one slope-deflection kernel.
-    const mode: FrameAnalysisMode = resolveFrameAnalysisMode(
-      this.isSideSwaySusceptible(),
-    );
-
     this.log(`Frame equation mode: ${mode}`);
 
     if (mode === "sway") {
