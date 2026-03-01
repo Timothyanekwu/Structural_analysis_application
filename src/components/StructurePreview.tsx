@@ -53,6 +53,13 @@ export interface Member {
   b?: number;
   h?: number;
   slabThickness?: number;
+  designParams?: {
+    fcu?: number;
+    fy?: number;
+    concreteCover_mm?: number;
+    linkDiameter_mm?: number;
+    fyv?: number;
+  };
 }
 
 interface StructurePreviewProps {

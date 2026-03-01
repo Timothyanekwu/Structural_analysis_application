@@ -66,6 +66,14 @@ type ProvidedBars = {
   area: number;
   label: string;
 };
+type LimitCheckSummary = {
+  status: "OK" | "CHECK" | "NA";
+  message: string;
+  actual: number | null;
+  limit: number | null;
+  units: string;
+  note?: string;
+};
 type BeamDesignSummary = {
   memberLabel: string;
   status: "OK" | "CHECK" | "ERROR";
@@ -76,6 +84,23 @@ type BeamDesignSummary = {
   supportBars: ProvidedBars | null;
   spanBars: ProvidedBars | null;
   shearZones: ShearZone[];
+  deflectionCheck: LimitCheckSummary;
+  crackWidthCheck: LimitCheckSummary;
+};
+type SupportDesignSummary = {
+  supportLabel: string;
+  status: "OK" | "CHECK" | "ERROR";
+  message: string;
+  governingMoment: number | null;
+  connectedMembers: string[];
+  d: number | null;
+  AsMin: number | null;
+  AsMax: number | null;
+  K: number | null;
+  z: number | null;
+  x: number | null;
+  AsRequired: number | null;
+  AsProvided: ProvidedBars | null;
 };
 type ColumnDesignSummary = {
   memberLabel: string;
@@ -83,6 +108,13 @@ type ColumnDesignSummary = {
   message: string;
   axialLoadUsed: number | null;
   result: ColumnDesignResult | null;
+};
+type DesignCheckStatus = "IMPLEMENTED" | "PARTIAL" | "MISSING";
+type DesignCheckCoverage = {
+  id: string;
+  name: string;
+  status: DesignCheckStatus;
+  notes: string;
 };
 type DesignResults = {
   assumptions: {
@@ -95,7 +127,9 @@ type DesignResults = {
     linkBarDiameter_mm: number;
     linkLegCount: number;
   };
+  checks: DesignCheckCoverage[];
   beams: BeamDesignSummary[];
+  supports: SupportDesignSummary[];
   columns: ColumnDesignSummary[];
 };
 type SolveResults = {
@@ -117,6 +151,62 @@ const DESIGN_ASSUMPTIONS: DesignResults["assumptions"] = {
   linkBarDiameter_mm: 8,
   linkLegCount: 2,
 };
+
+const DESIGN_CHECK_COVERAGE: DesignCheckCoverage[] = [
+  {
+    id: "beam-flexure-zones",
+    name: "Beam flexural design (support/span)",
+    status: "IMPLEMENTED",
+    notes: "K, z, x, As(req), As(prov) are computed for support and span zones.",
+  },
+  {
+    id: "beam-shear-zones",
+    name: "Beam shear zoning checks",
+    status: "IMPLEMENTED",
+    notes:
+      "SFD-based zones are evaluated with OK/WARNING/FAIL and spacing instructions.",
+  },
+  {
+    id: "beam-min-steel",
+    name: "Beam minimum steel",
+    status: "IMPLEMENTED",
+    notes: "As,min is computed and enforced when selecting required tension steel.",
+  },
+  {
+    id: "beam-max-steel",
+    name: "Beam maximum steel",
+    status: "PARTIAL",
+    notes: "As,max is computed/displayed, but no hard fail/termination is applied.",
+  },
+  {
+    id: "beam-deflection",
+    name: "Beam deflection control (span/depth)",
+    status: "PARTIAL",
+    notes:
+      "Implemented as L/d screening with BS 8110 basic ratio limits (without modification factors).",
+  },
+  {
+    id: "beam-crack-width",
+    name: "Beam crack width screening",
+    status: "PARTIAL",
+    notes:
+      "Implemented with a service-stress-based estimated crack width for rapid screening.",
+  },
+  {
+    id: "column-short-braced",
+    name: "Short braced column design",
+    status: "IMPLEMENTED",
+    notes:
+      "Slenderness gate, min/max steel checks, bar/link selection are implemented.",
+  },
+  {
+    id: "column-slender-design",
+    name: "Slender column design",
+    status: "MISSING",
+    notes:
+      "Current flow terminates when column is slender and requests slender-column module.",
+  },
+];
 
 function AnalysisContent() {
   const searchParams = useSearchParams();
@@ -322,6 +412,140 @@ function AnalysisContent() {
     });
   };
 
+  const resolvePositiveOrDefault = (value: unknown, fallback: number) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
+  };
+
+  const resolveDesignAssumptions = (
+    frontendMembers: Member[],
+  ): DesignResults["assumptions"] => {
+    const sourceParams = [...frontendMembers]
+      .reverse()
+      .find(
+        (member) =>
+          member.workflowMode === "design" &&
+          member.designParams &&
+          Object.values(member.designParams).some(
+            (value) => Number.isFinite(Number(value)) && Number(value) > 0,
+          ),
+      )?.designParams;
+
+    return {
+      fcu: resolvePositiveOrDefault(sourceParams?.fcu, DESIGN_ASSUMPTIONS.fcu),
+      fy: resolvePositiveOrDefault(sourceParams?.fy, DESIGN_ASSUMPTIONS.fy),
+      concreteCover_mm: resolvePositiveOrDefault(
+        sourceParams?.concreteCover_mm,
+        DESIGN_ASSUMPTIONS.concreteCover_mm,
+      ),
+      linkDiameter_mm: resolvePositiveOrDefault(
+        sourceParams?.linkDiameter_mm,
+        DESIGN_ASSUMPTIONS.linkDiameter_mm,
+      ),
+      // Main bar diameter is kept as an internal default for effective-depth assumptions.
+      mainBarDiameter_mm: DESIGN_ASSUMPTIONS.mainBarDiameter_mm,
+      fyv: resolvePositiveOrDefault(sourceParams?.fyv, DESIGN_ASSUMPTIONS.fyv),
+      linkBarDiameter_mm: DESIGN_ASSUMPTIONS.linkBarDiameter_mm,
+      linkLegCount: DESIGN_ASSUMPTIONS.linkLegCount,
+    };
+  };
+
+  const runDeflectionCheck = (
+    spanLength_mm: number,
+    d_mm: number,
+    supportMoment: number,
+  ): LimitCheckSummary => {
+    if (!(spanLength_mm > 0) || !(d_mm > 0)) {
+      return {
+        status: "NA",
+        message: "Insufficient geometry for deflection check.",
+        actual: null,
+        limit: null,
+        units: "L/d",
+      };
+    }
+
+    const isContinuous = supportMoment > 1e-6;
+    const limit = isContinuous ? 26 : 20;
+    const actual = spanLength_mm / d_mm;
+    const status: LimitCheckSummary["status"] = actual <= limit ? "OK" : "CHECK";
+
+    return {
+      status,
+      message:
+        status === "OK"
+          ? "Span/depth ratio is within basic BS 8110 deflection-control limit."
+          : "Span/depth ratio exceeds basic BS 8110 limit. Review depth or stiffness.",
+      actual,
+      limit,
+      units: "L/d",
+      note:
+        "Basic ratio check only; modification factors and long-term effects are not included.",
+    };
+  };
+
+  const runCrackWidthCheck = (params: {
+    beamWidth: number;
+    cover: number;
+    linkDiameter: number;
+    spanBars: ProvidedBars | null;
+    spanMoment: number;
+    z: number | null;
+  }): LimitCheckSummary => {
+    const { beamWidth, cover, linkDiameter, spanBars, spanMoment, z } = params;
+    if (!spanBars || !(beamWidth > 0) || !(z && z > 0)) {
+      return {
+        status: "NA",
+        message: "Insufficient data for crack-width screening.",
+        actual: null,
+        limit: 0.3,
+        units: "mm",
+      };
+    }
+
+    const serviceMoment = Math.abs(spanMoment) / 1.5;
+    if (serviceMoment <= 0) {
+      return {
+        status: "OK",
+        message: "No service-level sagging moment; crack-width demand is negligible.",
+        actual: 0,
+        limit: 0.3,
+        units: "mm",
+      };
+    }
+
+    const nBars = spanBars.count;
+    const phi = spanBars.diameter;
+    const AsProv = spanBars.area;
+    const effectiveCover = cover + linkDiameter + phi / 2;
+    const clearSpacing =
+      nBars > 1
+        ? Math.max(
+            0,
+            (beamWidth - 2 * (cover + linkDiameter) - nBars * phi) / (nBars - 1),
+          )
+        : 0;
+    const steelStress = (serviceMoment * 1e6) / (AsProv * z);
+    const estimatedWk =
+      3 * (effectiveCover + clearSpacing / 2) * (steelStress / 200000);
+    const limit = 0.3;
+    const status: LimitCheckSummary["status"] =
+      estimatedWk <= limit ? "OK" : "CHECK";
+
+    return {
+      status,
+      message:
+        status === "OK"
+          ? "Estimated crack width is within screening limit."
+          : "Estimated crack width exceeds screening limit. Review steel/distribution.",
+      actual: estimatedWk,
+      limit,
+      units: "mm",
+      note:
+        "Rapid screening estimate from service stress; detailed crack-width calc should confirm.",
+    };
+  };
+
   const pickProvidedBars = (requiredArea: number | null): ProvidedBars | null => {
     if (!Number.isFinite(requiredArea) || (requiredArea ?? 0) <= 0) return null;
     const barSizes = [12, 16, 20, 25, 32];
@@ -361,14 +585,53 @@ function AnalysisContent() {
     frontendMembers: Member[],
     solverMembers: (Beam | Column | InclinedMember)[],
     endMoments: { span: string; left: number; right: number }[],
+    assumptions: DesignResults["assumptions"],
   ): DesignResults => {
-    const assumptions = { ...DESIGN_ASSUMPTIONS };
     const beams: BeamDesignSummary[] = [];
+    const supports: SupportDesignSummary[] = [];
     const columns: ColumnDesignSummary[] = [];
     const rcc = new RCCDesignFormulaes(assumptions.fcu, assumptions.fy);
     const Asv =
       assumptions.linkLegCount *
       ((Math.PI * assumptions.linkBarDiameter_mm ** 2) / 4);
+    const supportCollectors = new Map<
+      string,
+      {
+        supportLabel: string;
+        connectedMembers: Set<string>;
+        governingMoment: number;
+        beamWidth: number;
+        overallDepth: number;
+      }
+    >();
+
+    const collectSupportDemand = (
+      supportLabel: string,
+      moment: number,
+      memberLabel: string,
+      beamWidth: number,
+      overallDepth: number,
+    ) => {
+      const hoggingMoment = Math.max(0, moment);
+      const existing = supportCollectors.get(supportLabel);
+      if (!existing) {
+        supportCollectors.set(supportLabel, {
+          supportLabel,
+          connectedMembers: new Set([memberLabel]),
+          governingMoment: hoggingMoment,
+          beamWidth,
+          overallDepth,
+        });
+        return;
+      }
+
+      existing.connectedMembers.add(memberLabel);
+      if (hoggingMoment > existing.governingMoment) {
+        existing.governingMoment = hoggingMoment;
+        existing.beamWidth = beamWidth;
+        existing.overallDepth = overallDepth;
+      }
+    };
 
     frontendMembers.forEach((frontend, index) => {
       if (frontend.workflowMode !== "design") return;
@@ -390,6 +653,20 @@ function AnalysisContent() {
             supportBars: null,
             spanBars: null,
             shearZones: [],
+            deflectionCheck: {
+              status: "NA",
+              message: "Deflection check unavailable due to invalid beam section input.",
+              actual: null,
+              limit: null,
+              units: "L/d",
+            },
+            crackWidthCheck: {
+              status: "NA",
+              message: "Crack-width check unavailable due to invalid beam section input.",
+              actual: null,
+              limit: null,
+              units: "mm",
+            },
           });
           return;
         }
@@ -406,9 +683,38 @@ function AnalysisContent() {
             supportBars: null,
             spanBars: null,
             shearZones: [],
+            deflectionCheck: {
+              status: "NA",
+              message: "Deflection check unavailable because solved moments are missing.",
+              actual: null,
+              limit: null,
+              units: "L/d",
+            },
+            crackWidthCheck: {
+              status: "NA",
+              message: "Crack-width check unavailable because solved moments are missing.",
+              actual: null,
+              limit: null,
+              units: "mm",
+            },
           });
           return;
         }
+
+        collectSupportDemand(
+          solverMember.startNode.id,
+          Math.abs(solved.left),
+          memberLabel,
+          b_mm,
+          h_mm,
+        );
+        collectSupportDemand(
+          solverMember.endNode.id,
+          Math.abs(solved.right),
+          memberLabel,
+          b_mm,
+          h_mm,
+        );
 
         const sectionType: SpanSectionType =
           frontend.beamSectionType === "L" || frontend.beamSectionType === "T"
@@ -446,7 +752,7 @@ function AnalysisContent() {
           const supportBars = pickProvidedBars(supportReq);
           const spanBars = pickProvidedBars(spanReq);
 
-          const shearZones = rcc.designShearZonesFromInternalForces(
+          const shearZonesLocal = rcc.designShearZonesFromInternalForces(
             diagram.map((p) => ({ x: p.x, shear: p.shear })),
             {
               b: b_mm,
@@ -457,9 +763,46 @@ function AnalysisContent() {
               Asv,
             },
           );
+          const memberLength = solverMember.length || 1;
+          const mapLocalXToGlobal = (localX: number) => {
+            const clamped = Math.max(0, Math.min(localX, memberLength));
+            const ratio = memberLength > 0 ? clamped / memberLength : 0;
+            return (
+              frontend.startNode.x +
+              (frontend.endNode.x - frontend.startNode.x) * ratio
+            );
+          };
+          const shearZones = shearZonesLocal.map((zone) => {
+            const gx1 = mapLocalXToGlobal(zone.startX);
+            const gx2 = mapLocalXToGlobal(zone.endX);
+            const startX = Math.min(gx1, gx2);
+            const endX = Math.max(gx1, gx2);
+            const instruction =
+              zone.status === "FAIL"
+                ? `From x = ${startX.toFixed(2)}m to x = ${endX.toFixed(2)}m: SECTION FAILS SHEAR. Increase b or d.`
+                : `From x = ${startX.toFixed(2)}m to x = ${endX.toFixed(2)}m, provide 2-legs at ${zone.providedSpacing}mm c/c stirrups.`;
+            return { ...zone, startX, endX, instruction };
+          });
+
+          const deflectionCheck = runDeflectionCheck(
+            solverMember.length * 1000,
+            flexure.d,
+            supportMoment,
+          );
+          const crackWidthCheck = runCrackWidthCheck({
+            beamWidth: b_mm,
+            cover: assumptions.concreteCover_mm,
+            linkDiameter: assumptions.linkDiameter_mm,
+            spanBars,
+            spanMoment,
+            z: flexure.span.z,
+          });
 
           const status =
-            flexure.ok && shearZones.every((z) => z.status === "OK")
+            flexure.ok &&
+            shearZones.every((z) => z.status === "OK") &&
+            deflectionCheck.status !== "CHECK" &&
+            crackWidthCheck.status !== "CHECK"
               ? "OK"
               : "CHECK";
           const message =
@@ -467,6 +810,10 @@ function AnalysisContent() {
               ? flexure.messages.join(" | ")
               : shearZones.some((z) => z.status !== "OK")
                 ? "Flexure solved. Review shear warnings/fail regions."
+                : deflectionCheck.status === "CHECK"
+                  ? "Flexure/shear solved. Deflection check requires review."
+                  : crackWidthCheck.status === "CHECK"
+                    ? "Flexure/shear solved. Crack-width check requires review."
                 : "Flexure and shear design checks completed.";
 
           beams.push({
@@ -479,6 +826,8 @@ function AnalysisContent() {
             supportBars,
             spanBars,
             shearZones,
+            deflectionCheck,
+            crackWidthCheck,
           });
         } catch (error: any) {
           beams.push({
@@ -491,6 +840,20 @@ function AnalysisContent() {
             supportBars: null,
             spanBars: null,
             shearZones: [],
+            deflectionCheck: {
+              status: "NA",
+              message: "Deflection check unavailable because beam flexural design failed.",
+              actual: null,
+              limit: null,
+              units: "L/d",
+            },
+            crackWidthCheck: {
+              status: "NA",
+              message: "Crack-width check unavailable because beam flexural design failed.",
+              actual: null,
+              limit: null,
+              units: "mm",
+            },
           });
         }
         return;
@@ -543,7 +906,83 @@ function AnalysisContent() {
       });
     });
 
-    return { assumptions, beams, columns };
+    supportCollectors.forEach((collector) => {
+      try {
+        const supportFlexure = rcc.designBeamByZones({
+          supportMoment: collector.governingMoment,
+          spanMoment: 0,
+          spanSectionType: "Rectangular",
+          beamWidth: collector.beamWidth,
+          overallDepth: collector.overallDepth,
+          concreteCover: assumptions.concreteCover_mm,
+          linkDiameter: assumptions.linkDiameter_mm,
+          mainBarDiameter: assumptions.mainBarDiameter_mm,
+        });
+
+        const AsRequired = Math.max(
+          supportFlexure.topSteelRequired ?? 0,
+          supportFlexure.AsMin,
+        );
+        const AsProvided = pickProvidedBars(AsRequired);
+        const status: SupportDesignSummary["status"] = supportFlexure.support.ok
+          ? "OK"
+          : "CHECK";
+        const message =
+          collector.governingMoment > 0
+            ? supportFlexure.support.message ||
+              "Support flexural design/check completed."
+            : "No support end moment detected. Minimum steel governs.";
+
+        supports.push({
+          supportLabel: collector.supportLabel,
+          status,
+          message,
+          governingMoment: collector.governingMoment,
+          connectedMembers: Array.from(collector.connectedMembers),
+          d: supportFlexure.d,
+          AsMin: supportFlexure.AsMin,
+          AsMax: supportFlexure.AsMax,
+          K: supportFlexure.support.K,
+          z: supportFlexure.support.z,
+          x: supportFlexure.support.x,
+          AsRequired,
+          AsProvided,
+        });
+      } catch (error: any) {
+        supports.push({
+          supportLabel: collector.supportLabel,
+          status: "ERROR",
+          message: error?.message || "Support design calculation failed.",
+          governingMoment: collector.governingMoment,
+          connectedMembers: Array.from(collector.connectedMembers),
+          d: null,
+          AsMin: null,
+          AsMax: null,
+          K: null,
+          z: null,
+          x: null,
+          AsRequired: null,
+          AsProvided: null,
+        });
+      }
+    });
+
+    supports.sort((a, b) => {
+      const aNum = Number((a.supportLabel.match(/\d+/) || [""])[0]);
+      const bNum = Number((b.supportLabel.match(/\d+/) || [""])[0]);
+      if (Number.isFinite(aNum) && Number.isFinite(bNum) && aNum !== bNum) {
+        return aNum - bNum;
+      }
+      return a.supportLabel.localeCompare(b.supportLabel);
+    });
+
+    return {
+      assumptions,
+      checks: DESIGN_CHECK_COVERAGE,
+      beams,
+      supports,
+      columns,
+    };
   };
 
   const formattedSolveData = (() => {
@@ -583,10 +1022,18 @@ function AnalysisContent() {
       }
     });
 
-    if (solveResults.design.beams.length || solveResults.design.columns.length) {
+    if (
+      solveResults.design.beams.length ||
+      solveResults.design.supports.length ||
+      solveResults.design.columns.length
+    ) {
       const a = solveResults.design.assumptions;
       reportText += "\nDesign Mode Results (BS 8110 workflow):\n";
-      reportText += `  Assumptions: fcu=${a.fcu}N/mm^2, fy=${a.fy}N/mm^2, cover=${a.concreteCover_mm}mm, links=${a.linkDiameter_mm}mm, mainBar=${a.mainBarDiameter_mm}mm\n`;
+      reportText += `  Assumptions: fcu=${a.fcu}N/mm^2, fy=${a.fy}N/mm^2, cover=${a.concreteCover_mm}mm, links=${a.linkDiameter_mm}mm\n`;
+      reportText += "  Checks Coverage:\n";
+      solveResults.design.checks.forEach((check) => {
+        reportText += `     - ${check.name}: ${check.status} (${check.notes})\n`;
+      });
 
       solveResults.design.beams.forEach((beam) => {
         reportText += `  ${beam.memberLabel} Beam [${beam.status}]\n`;
@@ -596,6 +1043,18 @@ function AnalysisContent() {
           reportText += `     Support: K=${beam.flexure.support.K?.toFixed(4) ?? "-"}, z=${beam.flexure.support.z?.toFixed(2) ?? "-"} mm, As(req)=${beam.flexure.topSteelRequired?.toFixed(2) ?? "-"} mm^2, As(prov)=${beam.supportBars ? `${beam.supportBars.area.toFixed(2)} mm^2 (${beam.supportBars.label})` : "-"}\n`;
           reportText += `     Span: K=${beam.flexure.span.K?.toFixed(4) ?? "-"}, z=${beam.flexure.span.z?.toFixed(2) ?? "-"} mm, As(req)=${beam.flexure.bottomSteelRequired?.toFixed(2) ?? "-"} mm^2, As(prov)=${beam.spanBars ? `${beam.spanBars.area.toFixed(2)} mm^2 (${beam.spanBars.label})` : "-"}\n`;
         }
+        reportText += `     Deflection: ${beam.deflectionCheck.status} (${beam.deflectionCheck.actual !== null ? `${beam.deflectionCheck.actual.toFixed(2)} ${beam.deflectionCheck.units}` : "-"}/${beam.deflectionCheck.limit !== null ? `${beam.deflectionCheck.limit.toFixed(2)} ${beam.deflectionCheck.units}` : "-"})\n`;
+        reportText += `     Crack Width: ${beam.crackWidthCheck.status} (${beam.crackWidthCheck.actual !== null ? `${beam.crackWidthCheck.actual.toFixed(3)} ${beam.crackWidthCheck.units}` : "-"}/${beam.crackWidthCheck.limit !== null ? `${beam.crackWidthCheck.limit.toFixed(3)} ${beam.crackWidthCheck.units}` : "-"})\n`;
+        beam.shearZones.forEach((zone) => {
+          reportText += `     Shear zone x=${zone.startX.toFixed(2)}m to ${zone.endX.toFixed(2)}m: ${zone.status}\n`;
+        });
+      });
+
+      solveResults.design.supports.forEach((support) => {
+        reportText += `  Support ${support.supportLabel} [${support.status}]\n`;
+        reportText += `     ${support.message}\n`;
+        reportText += `     Connected spans: ${support.connectedMembers.join(", ")}\n`;
+        reportText += `     Governing support end moment: ${support.governingMoment?.toFixed(2) ?? "-"} kNm\n`;
       });
 
       solveResults.design.columns.forEach((col) => {
@@ -939,7 +1398,13 @@ function AnalysisContent() {
         },
       );
 
-      const design = computeDesignResults(members, solverMembers, endMoments);
+      const activeDesignAssumptions = resolveDesignAssumptions(members);
+      const design = computeDesignResults(
+        members,
+        solverMembers,
+        endMoments,
+        activeDesignAssumptions,
+      );
 
       setSolveResults({
         fems,
@@ -1690,6 +2155,7 @@ function AnalysisContent() {
 
             {(solveResults &&
               (solveResults.design.beams.length > 0 ||
+                solveResults.design.supports.length > 0 ||
                 solveResults.design.columns.length > 0)) && (
               <section>
                 <div className="mb-6 rounded-2xl border border-white/10 bg-gradient-to-r from-amber-500/10 via-orange-500/5 to-emerald-500/10 p-5">
@@ -1713,10 +2179,44 @@ function AnalysisContent() {
                     Mu+ is maximum sagging (positive) design moment, Mu- is
                     maximum hogging (negative) design moment.
                   </p>
+                  <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {solveResults.design.checks.map((check) => (
+                      <div
+                        key={`check-${check.id}`}
+                        className="rounded-xl border border-white/10 bg-black/20 p-3"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[10px] font-bold text-gray-200">
+                            {check.name}
+                          </p>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[9px] font-black tracking-widest ${
+                              check.status === "IMPLEMENTED"
+                                ? "bg-emerald-500/20 text-emerald-300"
+                                : check.status === "PARTIAL"
+                                  ? "bg-amber-500/20 text-amber-300"
+                                  : "bg-red-500/20 text-red-300"
+                            }`}
+                          >
+                            {check.status}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[10px] text-gray-400">{check.notes}</p>
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
                 {solveResults.design.beams.length > 0 && (
                   <div className="space-y-4">
+                    <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-amber-300">
+                        Span Design Results
+                      </p>
+                      <p className="mt-1 text-[10px] text-gray-400">
+                        One card per span/member in workflow mode set to Design.
+                      </p>
+                    </div>
                     {solveResults.design.beams.map((beam) => (
                       <article
                         key={`design-beam-${beam.memberLabel}`}
@@ -1762,25 +2262,7 @@ function AnalysisContent() {
                               </div>
                             </div>
 
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                              <div className="rounded-xl border border-white/10 bg-black/30 p-3">
-                                <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">
-                                  Support Zone
-                                </p>
-                                <div className="grid grid-cols-2 gap-2 text-[10px]">
-                                  <p>K: {beam.flexure.support.K?.toFixed(4) ?? "-"}</p>
-                                  <p>z: {beam.flexure.support.z?.toFixed(2) ?? "-"} mm</p>
-                                  <p>x: {beam.flexure.support.x?.toFixed(2) ?? "-"} mm</p>
-                                  <p>As req: {beam.flexure.topSteelRequired?.toFixed(2) ?? "-"} mm^2</p>
-                                  <p className="col-span-2">
-                                    As prov:{" "}
-                                    {beam.supportBars
-                                      ? `${beam.supportBars.area.toFixed(2)} mm^2 (${beam.supportBars.label})`
-                                      : "-"}
-                                  </p>
-                                </div>
-                              </div>
-
+                            <div className="grid grid-cols-1 gap-3">
                               <div className="rounded-xl border border-white/10 bg-black/30 p-3">
                                 <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">
                                   Span Zone
@@ -1798,6 +2280,107 @@ function AnalysisContent() {
                                   </p>
                                 </div>
                               </div>
+
+                              <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">
+                                  Serviceability Checks
+                                </p>
+                                <div className="space-y-2 text-[10px]">
+                                  <div className="rounded-lg border border-white/10 bg-white/[0.02] p-2">
+                                    <div className="mb-1 flex items-center justify-between gap-2">
+                                      <p className="text-gray-300">Deflection (L/d)</p>
+                                      <span
+                                        className={`rounded-full px-2 py-0.5 text-[9px] font-black tracking-widest ${
+                                          beam.deflectionCheck.status === "OK"
+                                            ? "bg-emerald-500/20 text-emerald-300"
+                                            : beam.deflectionCheck.status === "CHECK"
+                                              ? "bg-amber-500/20 text-amber-300"
+                                              : "bg-white/10 text-gray-300"
+                                        }`}
+                                      >
+                                        {beam.deflectionCheck.status}
+                                      </span>
+                                    </div>
+                                    <p className="text-gray-400">
+                                      Actual/Limit:{" "}
+                                      {beam.deflectionCheck.actual !== null
+                                        ? beam.deflectionCheck.actual.toFixed(2)
+                                        : "-"}{" "}
+                                      /{" "}
+                                      {beam.deflectionCheck.limit !== null
+                                        ? beam.deflectionCheck.limit.toFixed(2)
+                                        : "-"}{" "}
+                                      {beam.deflectionCheck.units}
+                                    </p>
+                                    <p className="text-gray-500">{beam.deflectionCheck.message}</p>
+                                  </div>
+                                  <div className="rounded-lg border border-white/10 bg-white/[0.02] p-2">
+                                    <div className="mb-1 flex items-center justify-between gap-2">
+                                      <p className="text-gray-300">Crack Width</p>
+                                      <span
+                                        className={`rounded-full px-2 py-0.5 text-[9px] font-black tracking-widest ${
+                                          beam.crackWidthCheck.status === "OK"
+                                            ? "bg-emerald-500/20 text-emerald-300"
+                                            : beam.crackWidthCheck.status === "CHECK"
+                                              ? "bg-amber-500/20 text-amber-300"
+                                              : "bg-white/10 text-gray-300"
+                                        }`}
+                                      >
+                                        {beam.crackWidthCheck.status}
+                                      </span>
+                                    </div>
+                                    <p className="text-gray-400">
+                                      Estimated/Limit:{" "}
+                                      {beam.crackWidthCheck.actual !== null
+                                        ? beam.crackWidthCheck.actual.toFixed(3)
+                                        : "-"}{" "}
+                                      /{" "}
+                                      {beam.crackWidthCheck.limit !== null
+                                        ? beam.crackWidthCheck.limit.toFixed(3)
+                                        : "-"}{" "}
+                                      {beam.crackWidthCheck.units}
+                                    </p>
+                                    <p className="text-gray-500">{beam.crackWidthCheck.message}</p>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {beam.shearZones.length > 0 && (
+                                <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">
+                                    Shear Check Zones
+                                  </p>
+                                  <div className="space-y-2 text-[10px]">
+                                    {beam.shearZones.map((zone, zoneIdx) => (
+                                      <div
+                                        key={`zone-${beam.memberLabel}-${zoneIdx}`}
+                                        className="rounded-lg border border-white/10 bg-white/[0.02] p-2"
+                                      >
+                                        <div className="mb-1 flex items-center justify-between gap-2">
+                                          <p className="text-gray-300">
+                                            Global x = {zone.startX.toFixed(2)} m to{" "}
+                                            {zone.endX.toFixed(2)} m
+                                          </p>
+                                          <span
+                                            className={`rounded-full px-2 py-0.5 text-[9px] font-black tracking-widest ${
+                                              zone.status === "OK"
+                                                ? "bg-emerald-500/20 text-emerald-300"
+                                                : zone.status === "WARNING"
+                                                  ? "bg-amber-500/20 text-amber-300"
+                                                  : "bg-red-500/20 text-red-300"
+                                            }`}
+                                          >
+                                            {zone.status}
+                                          </span>
+                                        </div>
+                                        <p className="text-gray-400">
+                                          {zone.condition} | {zone.instruction}
+                                        </p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           </>
                         )}
@@ -1806,8 +2389,82 @@ function AnalysisContent() {
                   </div>
                 )}
 
+                {solveResults.design.supports.length > 0 && (
+                  <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="rounded-xl border border-white/10 bg-black/20 p-3 md:col-span-2">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-amber-300">
+                        Support Design Results
+                      </p>
+                      <p className="mt-1 text-[10px] text-gray-400">
+                        One card per support node, using governing hogging moment
+                        from connected design spans.
+                      </p>
+                    </div>
+                    {solveResults.design.supports.map((support) => (
+                      <article
+                        key={`design-support-${support.supportLabel}`}
+                        className="rounded-2xl border border-white/10 bg-[#0b0b0b] p-5"
+                      >
+                        <div className="mb-2 flex items-center justify-between">
+                          <h4 className="text-sm font-black uppercase tracking-widest text-gray-200">
+                            Support {support.supportLabel}
+                          </h4>
+                          <span
+                            className={`rounded-full px-3 py-1 text-[9px] font-black uppercase tracking-widest ${
+                              support.status === "OK"
+                                ? "bg-emerald-500/20 text-emerald-300"
+                                : support.status === "CHECK"
+                                  ? "bg-amber-500/20 text-amber-300"
+                                  : "bg-red-500/20 text-red-300"
+                            }`}
+                          >
+                            {support.status}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-gray-400">{support.message}</p>
+                        <p className="mt-2 text-[10px] text-gray-500">
+                          Connected spans: {support.connectedMembers.join(", ")}
+                        </p>
+                        {support.governingMoment !== null && (
+                          <p className="mt-2 text-[10px] text-gray-500">
+                            Governing support end moment used:{" "}
+                            {support.governingMoment.toFixed(2)} kNm
+                          </p>
+                        )}
+                        {(support.K !== null ||
+                          support.AsRequired !== null ||
+                          support.AsProvided) && (
+                          <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
+                            <p>K: {support.K?.toFixed(4) ?? "-"}</p>
+                            <p>z: {support.z?.toFixed(2) ?? "-"} mm</p>
+                            <p>x: {support.x?.toFixed(2) ?? "-"} mm</p>
+                            <p>d: {support.d?.toFixed(2) ?? "-"} mm</p>
+                            <p>As req: {support.AsRequired?.toFixed(2) ?? "-"} mm^2</p>
+                            <p>As min: {support.AsMin?.toFixed(2) ?? "-"} mm^2</p>
+                            <p className="col-span-2">
+                              As prov:{" "}
+                              {support.AsProvided
+                                ? `${support.AsProvided.area.toFixed(2)} mm^2 (${support.AsProvided.label})`
+                                : "-"}
+                            </p>
+                          </div>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                )}
+
                 {solveResults.design.columns.length > 0 && (
                   <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="rounded-xl border border-white/10 bg-black/20 p-3 md:col-span-2">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-amber-300">
+                        Column Design Results (Short Braced)
+                      </p>
+                      <p className="mt-1 text-[10px] text-gray-400">
+                        Generated from the short braced column workflow in the RCC
+                        design module.
+                      </p>
+                    </div>
                     {solveResults.design.columns.map((column) => (
                       <article
                         key={`design-col-${column.memberLabel}`}

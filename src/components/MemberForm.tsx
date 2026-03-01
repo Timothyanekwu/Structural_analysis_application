@@ -24,6 +24,14 @@ type JointAction = {
   mz: number | "";
 };
 
+const DESIGN_PARAM_DEFAULTS = {
+  fcu: 30,
+  fy: 460,
+  concreteCover_mm: 25,
+  linkDiameter_mm: 10,
+  fyv: 460,
+};
+
 interface MemberFormProps {
   mode?: "beams" | "frames";
   onSuccess?: (data: any) => void;
@@ -112,6 +120,19 @@ export default function MemberForm({
     b: initialData?.b ?? "",
     h: initialData?.h ?? "",
     slabThickness: initialData?.slabThickness ?? "",
+  });
+  const [designParams, setDesignParams] = useState<{
+    fcu: number | "";
+    fy: number | "";
+    concreteCover_mm: number | "";
+    linkDiameter_mm: number | "";
+    fyv: number | "";
+  }>({
+    fcu: initialData?.designParams?.fcu ?? "",
+    fy: initialData?.designParams?.fy ?? "",
+    concreteCover_mm: initialData?.designParams?.concreteCover_mm ?? "",
+    linkDiameter_mm: initialData?.designParams?.linkDiameter_mm ?? "",
+    fyv: initialData?.designParams?.fyv ?? "",
   });
 
   const [loads, setLoads] = useState<Load[]>(initialData?.loads || []);
@@ -359,6 +380,23 @@ export default function MemberForm({
             endSettlement: Number(settlement.end || 0),
           }
         : { startSettlement: 0, endSettlement: 0 };
+    const optionalPositive = (value: number | "", integer = false) => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric <= 0) return undefined;
+      return integer ? Math.max(1, Math.round(numeric)) : numeric;
+    };
+    const resolvedDesignParams = isDesignMode
+      ? {
+          fcu: optionalPositive(designParams.fcu),
+          fy: optionalPositive(designParams.fy),
+          concreteCover_mm: optionalPositive(designParams.concreteCover_mm),
+          linkDiameter_mm: optionalPositive(designParams.linkDiameter_mm),
+          fyv: optionalPositive(designParams.fyv),
+        }
+      : undefined;
+    const hasAnyDesignParam =
+      !!resolvedDesignParams &&
+      Object.values(resolvedDesignParams).some((value) => value !== undefined);
     const memberData = {
       startNode: {
         x: Number(startNode.x || 0),
@@ -391,6 +429,7 @@ export default function MemberForm({
       loads,
       Ecoef: resolvedE,
       Icoef: resolvedI,
+      designParams: hasAnyDesignParam ? resolvedDesignParams : undefined,
       ...resolvedSectionProps,
     };
     if (onSuccess) onSuccess(memberData);
@@ -436,6 +475,17 @@ export default function MemberForm({
     b: isDesignMode ? Number(sectionProps.b || 0) : 0,
     h: isDesignMode ? Number(sectionProps.h || 0) : 0,
     slabThickness: isDesignMode ? Number(sectionProps.slabThickness || 0) : 0,
+    designParams: isDesignMode
+      ? {
+          fcu: Number(designParams.fcu || 0) || undefined,
+          fy: Number(designParams.fy || 0) || undefined,
+          concreteCover_mm:
+            Number(designParams.concreteCover_mm || 0) || undefined,
+          linkDiameter_mm:
+            Number(designParams.linkDiameter_mm || 0) || undefined,
+          fyv: Number(designParams.fyv || 0) || undefined,
+        }
+      : undefined,
   };
 
   return (
@@ -751,56 +801,123 @@ export default function MemberForm({
             </div>
 
             {isDesignMode && (
-              <div className="bg-white/[0.02] border border-white/5 p-6 rounded-2xl space-y-4">
-                <div className="flex items-center gap-2 pb-2 border-b border-white/5">
-                  <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent)]"></div>
-                  <h4 className="text-[10px] font-black uppercase tracking-widest text-gray-500">
-                    Geometry
-                  </h4>
+              <>
+                <div className="bg-white/[0.02] border border-white/5 p-6 rounded-2xl space-y-4">
+                  <div className="flex items-center gap-2 pb-2 border-b border-white/5">
+                    <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent)]"></div>
+                    <h4 className="text-[10px] font-black uppercase tracking-widest text-gray-500">
+                      Geometry
+                    </h4>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <UnitInput
+                      unitType="length"
+                      preferredUnit={defaultUnits.length}
+                      resetSignal={unitResetSignal}
+                      value={sectionProps.b}
+                      onChange={(val) =>
+                        setSectionProps({ ...sectionProps, b: val })
+                      }
+                      label="Width (b)"
+                      placeholder="0.23"
+                    />
+                    <UnitInput
+                      unitType="length"
+                      preferredUnit={defaultUnits.length}
+                      resetSignal={unitResetSignal}
+                      value={sectionProps.h}
+                      onChange={(val) =>
+                        setSectionProps({ ...sectionProps, h: val })
+                      }
+                      label="Depth (h)"
+                      placeholder="0.45"
+                    />
+                    {memberType === "Beam" && (
+                      <div className="sm:col-span-2">
+                        <UnitInput
+                          unitType="length"
+                          preferredUnit={defaultUnits.length}
+                          resetSignal={unitResetSignal}
+                          value={sectionProps.slabThickness}
+                          onChange={(val) =>
+                            setSectionProps({
+                              ...sectionProps,
+                              slabThickness: val,
+                            })
+                          }
+                          label="Slab Thickness"
+                          placeholder="0.00"
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <UnitInput
-                    unitType="length"
-                    preferredUnit={defaultUnits.length}
-                    resetSignal={unitResetSignal}
-                    value={sectionProps.b}
-                    onChange={(val) =>
-                      setSectionProps({ ...sectionProps, b: val })
-                    }
-                    label="Width (b)"
-                    placeholder="0.23"
-                  />
-                  <UnitInput
-                    unitType="length"
-                    preferredUnit={defaultUnits.length}
-                    resetSignal={unitResetSignal}
-                    value={sectionProps.h}
-                    onChange={(val) =>
-                      setSectionProps({ ...sectionProps, h: val })
-                    }
-                    label="Depth (h)"
-                    placeholder="0.45"
-                  />
-                  {memberType === "Beam" && (
-                    <div className="sm:col-span-2">
-                      <UnitInput
-                        unitType="length"
-                        preferredUnit={defaultUnits.length}
-                        resetSignal={unitResetSignal}
-                        value={sectionProps.slabThickness}
-                        onChange={(val) =>
-                          setSectionProps({
-                            ...sectionProps,
-                            slabThickness: val,
-                          })
-                        }
-                        label="Slab Thickness"
-                        placeholder="0.00"
-                      />
+
+                <div className="bg-white/[0.02] border border-white/5 p-6 rounded-2xl space-y-4">
+                  <div className="flex items-center justify-between gap-2 pb-2 border-b border-white/5">
+                    <div className="flex items-center gap-2">
+                      <div className="w-1.5 h-1.5 rounded-full bg-amber-400"></div>
+                      <h4 className="text-[10px] font-black uppercase tracking-widest text-gray-500">
+                        RCC Design Parameters
+                      </h4>
                     </div>
-                  )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDesignParams({
+                          fcu: "",
+                          fy: "",
+                          concreteCover_mm: "",
+                          linkDiameter_mm: "",
+                          fyv: "",
+                        })
+                      }
+                      className="rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-[8px] font-black uppercase tracking-widest text-gray-400 hover:text-white"
+                    >
+                      Use Defaults
+                    </button>
+                  </div>
+                  <p className="text-[9px] text-gray-600 leading-relaxed px-1">
+                    Optional overrides for RCC workflow. Leave blank to use
+                    defaults (fcu 30, fy 460, cover 25, link dia 10, fyv 460).
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {(
+                      [
+                        ["fcu", "fcu (N/mm^2)"],
+                        ["fy", "fy (N/mm^2)"],
+                        ["concreteCover_mm", "Cover (mm)"],
+                        ["linkDiameter_mm", "Link Dia (mm)"],
+                        ["fyv", "fyv (N/mm^2)"],
+                      ] as Array<
+                        [
+                          keyof typeof designParams,
+                          string,
+                        ]
+                      >
+                    ).map(([key, label]) => (
+                      <div key={`rcc-param-${key}`} className="space-y-1">
+                        <label className="text-[9px] font-black uppercase text-gray-500 ml-1 block tracking-widest">
+                          {label}
+                        </label>
+                        <input
+                          type="number"
+                          value={designParams[key]}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            setDesignParams((prev) => ({
+                              ...prev,
+                              [key]: raw === "" ? "" : Number(raw),
+                            }));
+                          }}
+                          placeholder={`${DESIGN_PARAM_DEFAULTS[key]}`}
+                          className="no-spinner w-full bg-black border border-white/10 rounded-xl px-4 py-2 text-xs font-bold outline-none focus:border-[var(--accent)]"
+                        />
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              </>
             )}
 
             {/* Stiffness Group */}
@@ -1027,11 +1144,18 @@ export default function MemberForm({
                         setNewLoad({
                           ...newLoad,
                           angle:
-                            e.target.value === "" ? "" : Number(e.target.value),
+                            e.target.value === ""
+                              ? ""
+                              : Math.max(
+                                  90,
+                                  Math.min(360, Number(e.target.value)),
+                                ),
                         })
                       }
+                      min={90}
+                      max={360}
                       className="no-spinner w-full bg-black border border-[var(--accent)]/30 rounded-xl px-4 py-2 text-xs font-bold outline-none focus:border-[var(--accent)] bg-[var(--accent-glow)]/5"
-                      placeholder="90"
+                      placeholder="90 - 360"
                     />
                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-[var(--accent)]">
                       deg
@@ -1040,7 +1164,7 @@ export default function MemberForm({
                 </div>
                 <div className="flex flex-col justify-end">
                   <div className="grid grid-cols-4 gap-1 bg-black/40 p-1 rounded-lg border border-white/5">
-                    {[0, 90, 180, 270].map((a) => (
+                    {[90, 180, 270, 360].map((a) => (
                       <button
                         key={a}
                         onClick={() =>
