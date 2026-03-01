@@ -96,6 +96,13 @@ export default function MemberForm({
     start: SupportType;
     end: SupportType;
   }>(initialData?.supports || { start: "None", end: "None" });
+  const [settlement, setSettlement] = useState<{
+    start: number | "";
+    end: number | "";
+  }>({
+    start: initialData?.supports?.startSettlement ?? "",
+    end: initialData?.supports?.endSettlement ?? "",
+  });
 
   const [sectionProps, setSectionProps] = useState<{
     b: number | "";
@@ -145,6 +152,11 @@ export default function MemberForm({
     (initialData?.b ?? 0) > 0 ||
       (initialData?.h ?? 0) > 0 ||
       (initialData?.slabThickness ?? 0) > 0,
+  );
+  const [useSettlements, setUseSettlements] = useState<boolean>(
+    isBeamMode &&
+      ((initialData?.supports?.startSettlement ?? 0) !== 0 ||
+        (initialData?.supports?.endSettlement ?? 0) !== 0),
   );
   const [unitResetSignal, setUnitResetSignal] = useState(0);
   const [jointActions, setJointActions] = useState<{
@@ -204,15 +216,22 @@ export default function MemberForm({
       if (sData) {
         if (typeof sData === "string") {
           setSupports((prev) => ({ ...prev, start: sData as SupportType }));
+          if (isBeamMode) setSettlement((prev) => ({ ...prev, start: "" }));
         } else {
           setSupports((prev) => ({
             ...prev,
             start: sData.type as SupportType,
           }));
+          if (isBeamMode) {
+            setSettlement((prev) => ({
+              ...prev,
+              start: sData.settlement ?? "",
+            }));
+          }
         }
       }
     }
-  }, [startNodeIdx, existingNodes, nodeSupports, memberType]);
+  }, [startNodeIdx, existingNodes, nodeSupports, memberType, isBeamMode]);
 
   useEffect(() => {
     if (endNodeIdx !== -1) {
@@ -230,12 +249,16 @@ export default function MemberForm({
       if (sData) {
         if (typeof sData === "string") {
           setSupports((prev) => ({ ...prev, end: sData as SupportType }));
+          if (isBeamMode) setSettlement((prev) => ({ ...prev, end: "" }));
         } else {
           setSupports((prev) => ({ ...prev, end: sData.type as SupportType }));
+          if (isBeamMode) {
+            setSettlement((prev) => ({ ...prev, end: sData.settlement ?? "" }));
+          }
         }
       }
     }
-  }, [endNodeIdx, existingNodes, nodeSupports, memberType]);
+  }, [endNodeIdx, existingNodes, nodeSupports, memberType, isBeamMode]);
 
   // In Design mode, keep I synced from section geometry.
   useEffect(() => {
@@ -329,6 +352,13 @@ export default function MemberForm({
           slabThickness: Number(sectionProps.slabThickness || 0),
         }
       : { b: 0, h: 0, slabThickness: 0 };
+    const resolvedSettlements =
+      isBeamMode && useSettlements
+        ? {
+            startSettlement: Number(settlement.start || 0),
+            endSettlement: Number(settlement.end || 0),
+          }
+        : { startSettlement: 0, endSettlement: 0 };
     const memberData = {
       startNode: {
         x: Number(startNode.x || 0),
@@ -341,10 +371,10 @@ export default function MemberForm({
       memberType: isBeamMode ? "Beam" : memberType,
       beamSectionType: beamSectionType,
       workflowMode: isDesignMode ? "design" : "analysis",
+      includeSettlements: isBeamMode && useSettlements,
       supports: {
         ...supports,
-        startSettlement: 0,
-        endSettlement: 0,
+        ...resolvedSettlements,
       },
       jointActions: {
         start: {
@@ -380,10 +410,13 @@ export default function MemberForm({
     memberType: isBeamMode ? "Beam" : memberType,
     beamSectionType: beamSectionType,
     workflowMode: isDesignMode ? "design" : "analysis",
+    includeSettlements: isBeamMode && useSettlements,
     supports: {
       ...supports,
-      startSettlement: 0,
-      endSettlement: 0,
+      startSettlement:
+        isBeamMode && useSettlements ? Number(settlement.start || 0) : 0,
+      endSettlement:
+        isBeamMode && useSettlements ? Number(settlement.end || 0) : 0,
     },
     jointActions: {
       start: {
@@ -1135,6 +1168,64 @@ export default function MemberForm({
               </select>
             </div>
           </div>
+          {isBeamMode && (
+            <div className="bg-white/[0.02] border border-white/5 p-4 rounded-2xl space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-orange-400"></div>
+                  <span className="text-[9px] font-black uppercase tracking-widest text-gray-500">
+                    Prior Settlements
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setUseSettlements((prev) => {
+                      const next = !prev;
+                      if (!next) {
+                        setSettlement({ start: "", end: "" });
+                      }
+                      return next;
+                    })
+                  }
+                  className={`rounded-lg border px-3 py-1.5 text-[9px] font-black uppercase tracking-widest transition-colors ${
+                    useSettlements
+                      ? "border-[var(--primary)] bg-[var(--primary-glow)]/20 text-[var(--primary)]"
+                      : "border-white/10 bg-black/30 text-gray-500 hover:text-gray-300"
+                  }`}
+                >
+                  {useSettlements ? "Enabled" : "Disabled"}
+                </button>
+              </div>
+
+              {useSettlements && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <UnitInput
+                    unitType="length"
+                    preferredUnit={defaultUnits.length}
+                    resetSignal={unitResetSignal}
+                    value={settlement.start}
+                    onChange={(val) =>
+                      setSettlement({ ...settlement, start: val })
+                    }
+                    label="Start Node Settlement"
+                    placeholder="0.00"
+                  />
+                  <UnitInput
+                    unitType="length"
+                    preferredUnit={defaultUnits.length}
+                    resetSignal={unitResetSignal}
+                    value={settlement.end}
+                    onChange={(val) =>
+                      setSettlement({ ...settlement, end: val })
+                    }
+                    label="End Node Settlement"
+                    placeholder="0.00"
+                  />
+                </div>
+              )}
+            </div>
+          )}
           <div className="bg-white/[0.02] border border-white/5 p-4 rounded-2xl space-y-4">
             <div className="flex items-center gap-2">
               <div className="w-1.5 h-1.5 rounded-full bg-blue-400"></div>
@@ -1240,7 +1331,9 @@ export default function MemberForm({
             </div>
           </div>
           <p className="text-[10px] text-gray-600 italic px-2 leading-relaxed">
-            Supports sync from linked nodes. Joint actions are Fx, Fy, and Mz.
+            {isBeamMode
+              ? "Supports sync from linked nodes. Settlements are optional and stay zero unless enabled."
+              : "Supports sync from linked nodes. Joint actions are Fx, Fy, and Mz."}
           </p>
         </section>
 

@@ -25,6 +25,16 @@ import {
   UDL as SolverUDL,
   VDL as SolverVDL,
 } from "@_lib/elements/load";
+import {
+  RCCDesignFormulaes,
+  SpanSectionType,
+  ZonedBeamDesignResult,
+} from "@_lib/RCCDesign/RCCDesignFormulaes";
+import {
+  DesignResult as ColumnDesignResult,
+  designShortBracedColumn,
+} from "@_lib/RCCDesign/columnDesign";
+import type { ShearZone } from "@_lib/RCCDesign/ShearDesignEngine";
 import DiagramsSection from "@/components/DiagramsSection";
 import { calculateDiagramData } from "@/utils/diagramUtils";
 import { MemberDiagramData } from "@/components/FrameDiagramOverlay";
@@ -50,12 +60,62 @@ type ResultUnitPreference = {
 type SolveReaction = { id: string; x?: number; y: number; m?: number };
 type BeamMemberDiagram = { span: string; data: BeamInternalForcePoint[] };
 type FrontJointAction = NonNullable<Member["jointActions"]>["start"];
+type ProvidedBars = {
+  count: number;
+  diameter: number;
+  area: number;
+  label: string;
+};
+type BeamDesignSummary = {
+  memberLabel: string;
+  status: "OK" | "CHECK" | "ERROR";
+  message: string;
+  supportMoment: number | null;
+  spanMoment: number | null;
+  flexure: ZonedBeamDesignResult | null;
+  supportBars: ProvidedBars | null;
+  spanBars: ProvidedBars | null;
+  shearZones: ShearZone[];
+};
+type ColumnDesignSummary = {
+  memberLabel: string;
+  status: "SUCCESS" | "TERMINATED" | "SKIPPED";
+  message: string;
+  axialLoadUsed: number | null;
+  result: ColumnDesignResult | null;
+};
+type DesignResults = {
+  assumptions: {
+    fcu: number;
+    fy: number;
+    concreteCover_mm: number;
+    linkDiameter_mm: number;
+    mainBarDiameter_mm: number;
+    fyv: number;
+    linkBarDiameter_mm: number;
+    linkLegCount: number;
+  };
+  beams: BeamDesignSummary[];
+  columns: ColumnDesignSummary[];
+};
 type SolveResults = {
   fems: { span: string; start: number; end: number }[];
   endMoments: { span: string; left: number; right: number }[];
   reactions: SolveReaction[];
   frameSidesway: boolean | null;
   beamDiagrams: BeamMemberDiagram[];
+  design: DesignResults;
+};
+
+const DESIGN_ASSUMPTIONS: DesignResults["assumptions"] = {
+  fcu: 30,
+  fy: 460,
+  concreteCover_mm: 25,
+  linkDiameter_mm: 10,
+  mainBarDiameter_mm: 16,
+  fyv: 460,
+  linkBarDiameter_mm: 8,
+  linkLegCount: 2,
 };
 
 function AnalysisContent() {
@@ -150,23 +210,28 @@ function AnalysisContent() {
   }, [members]);
 
   const supportResolution = useMemo(() => {
-    const supports: Record<string, { type: string }> = {};
+    const supports: Record<string, { type: string; settlement: number }> = {};
     const conflicts: string[] = [];
+    const tol = 1e-9;
 
     const register = (
       key: string,
       nodeLabel: string,
       type: string,
+      settlement: number,
       memberIndex: number,
     ) => {
       const existing = supports[key];
       if (!existing) {
-        supports[key] = { type };
+        supports[key] = { type, settlement };
         return;
       }
-      if (existing.type !== type) {
+      if (
+        existing.type !== type ||
+        (!isFrameMode && Math.abs(existing.settlement - settlement) > tol)
+      ) {
         conflicts.push(
-          `${nodeLabel}: member ${memberIndex + 1} has ${type}, existing is ${existing.type}`,
+          `${nodeLabel}: member ${memberIndex + 1} has ${type} (settlement=${settlement}), existing is ${existing.type} (settlement=${existing.settlement})`,
         );
       }
     };
@@ -174,12 +239,17 @@ function AnalysisContent() {
     members.forEach((m, memberIndex) => {
       const sKey = JSON.stringify(m.startNode);
       const eKey = JSON.stringify(m.endNode);
+      const sSettlement = isFrameMode
+        ? 0
+        : Number(m.supports.startSettlement || 0);
+      const eSettlement = isFrameMode ? 0 : Number(m.supports.endSettlement || 0);
 
       if (m.supports.start !== "None") {
         register(
           sKey,
           `(${m.startNode.x}, ${m.startNode.y})`,
           m.supports.start,
+          sSettlement,
           memberIndex,
         );
       }
@@ -188,13 +258,14 @@ function AnalysisContent() {
           eKey,
           `(${m.endNode.x}, ${m.endNode.y})`,
           m.supports.end,
+          eSettlement,
           memberIndex,
         );
       }
     });
 
     return { supports, conflicts };
-  }, [members]);
+  }, [members, isFrameMode]);
 
   const nodeSupports = supportResolution.supports;
 
@@ -251,6 +322,230 @@ function AnalysisContent() {
     });
   };
 
+  const pickProvidedBars = (requiredArea: number | null): ProvidedBars | null => {
+    if (!Number.isFinite(requiredArea) || (requiredArea ?? 0) <= 0) return null;
+    const barSizes = [12, 16, 20, 25, 32];
+    const target = requiredArea ?? 0;
+
+    for (const dia of barSizes) {
+      const areaOne = (Math.PI * dia * dia) / 4;
+      let count = Math.ceil(target / areaOne);
+      if (count < 2) count = 2;
+      if (count % 2 !== 0) count += 1;
+      const area = count * areaOne;
+      if (area >= target) {
+        return {
+          count,
+          diameter: dia,
+          area,
+          label: `${count}Y${dia}`,
+        };
+      }
+    }
+
+    const fallbackDia = 32;
+    const areaOne = (Math.PI * fallbackDia * fallbackDia) / 4;
+    let count = Math.ceil(target / areaOne);
+    if (count < 2) count = 2;
+    if (count % 2 !== 0) count += 1;
+    const area = count * areaOne;
+    return {
+      count,
+      diameter: fallbackDia,
+      area,
+      label: `${count}Y${fallbackDia}`,
+    };
+  };
+
+  const computeDesignResults = (
+    frontendMembers: Member[],
+    solverMembers: (Beam | Column | InclinedMember)[],
+    endMoments: { span: string; left: number; right: number }[],
+  ): DesignResults => {
+    const assumptions = { ...DESIGN_ASSUMPTIONS };
+    const beams: BeamDesignSummary[] = [];
+    const columns: ColumnDesignSummary[] = [];
+    const rcc = new RCCDesignFormulaes(assumptions.fcu, assumptions.fy);
+    const Asv =
+      assumptions.linkLegCount *
+      ((Math.PI * assumptions.linkBarDiameter_mm ** 2) / 4);
+
+    frontendMembers.forEach((frontend, index) => {
+      if (frontend.workflowMode !== "design") return;
+
+      const solverMember = solverMembers[index];
+      const memberLabel = `M${index + 1}`;
+
+      if (solverMember instanceof Beam) {
+        const b_mm = Number(frontend.b ?? 0) * 1000;
+        const h_mm = Number(frontend.h ?? 0) * 1000;
+        if (!(b_mm > 0 && h_mm > 0)) {
+          beams.push({
+            memberLabel,
+            status: "ERROR",
+            message: "Beam design mode requires valid section width/depth.",
+            supportMoment: null,
+            spanMoment: null,
+            flexure: null,
+            supportBars: null,
+            spanBars: null,
+            shearZones: [],
+          });
+          return;
+        }
+
+        const solved = endMoments[index];
+        if (!solved) {
+          beams.push({
+            memberLabel,
+            status: "ERROR",
+            message: "No solved moments found for this beam.",
+            supportMoment: null,
+            spanMoment: null,
+            flexure: null,
+            supportBars: null,
+            spanBars: null,
+            shearZones: [],
+          });
+          return;
+        }
+
+        const sectionType: SpanSectionType =
+          frontend.beamSectionType === "L" || frontend.beamSectionType === "T"
+            ? frontend.beamSectionType
+            : "Rectangular";
+
+        const diagram = calculateDiagramData(frontend, {
+          leftMoment: solved.left,
+          rightMoment: solved.right,
+        });
+        const moments = diagram.map((p) => p.moment);
+        const supportMoment = moments.length
+          ? Math.max(0, -Math.min(...moments))
+          : 0;
+        const spanMoment = moments.length ? Math.max(0, ...moments) : 0;
+
+        try {
+          const flexure = rcc.designBeamByZones({
+            supportMoment,
+            spanMoment,
+            spanSectionType: sectionType,
+            beamWidth: b_mm,
+            overallDepth: h_mm,
+            concreteCover: assumptions.concreteCover_mm,
+            linkDiameter: assumptions.linkDiameter_mm,
+            mainBarDiameter: assumptions.mainBarDiameter_mm,
+            continuousSpanLength:
+              sectionType === "L" || sectionType === "T"
+                ? solverMember.length * 1000
+                : undefined,
+          });
+
+          const supportReq = Math.max(flexure.topSteelRequired ?? 0, flexure.AsMin);
+          const spanReq = Math.max(flexure.bottomSteelRequired ?? 0, flexure.AsMin);
+          const supportBars = pickProvidedBars(supportReq);
+          const spanBars = pickProvidedBars(spanReq);
+
+          const shearZones = rcc.designShearZonesFromInternalForces(
+            diagram.map((p) => ({ x: p.x, shear: p.shear })),
+            {
+              b: b_mm,
+              d: flexure.d,
+              As: Math.max(supportReq, spanReq),
+              fcu: assumptions.fcu,
+              fyv: assumptions.fyv,
+              Asv,
+            },
+          );
+
+          const status =
+            flexure.ok && shearZones.every((z) => z.status === "OK")
+              ? "OK"
+              : "CHECK";
+          const message =
+            !flexure.ok && flexure.messages.length
+              ? flexure.messages.join(" | ")
+              : shearZones.some((z) => z.status !== "OK")
+                ? "Flexure solved. Review shear warnings/fail regions."
+                : "Flexure and shear design checks completed.";
+
+          beams.push({
+            memberLabel,
+            status,
+            message,
+            supportMoment,
+            spanMoment,
+            flexure,
+            supportBars,
+            spanBars,
+            shearZones,
+          });
+        } catch (error: any) {
+          beams.push({
+            memberLabel,
+            status: "ERROR",
+            message: error?.message || "Beam design calculation failed.",
+            supportMoment,
+            spanMoment,
+            flexure: null,
+            supportBars: null,
+            spanBars: null,
+            shearZones: [],
+          });
+        }
+        return;
+      }
+
+      if (isFrameMode && solverMember instanceof Column) {
+        const b_mm = Number(frontend.b ?? 0) * 1000;
+        const h_mm = Number(frontend.h ?? 0) * 1000;
+        if (!(b_mm > 0 && h_mm > 0)) {
+          columns.push({
+            memberLabel,
+            status: "SKIPPED",
+            message: "Column design mode requires valid section width/depth.",
+            axialLoadUsed: null,
+            result: null,
+          });
+          return;
+        }
+
+        const axialLoadUsed = Math.max(
+          Math.abs(solverMember.endReactions.RyStart || 0),
+          Math.abs(solverMember.endReactions.RyEnd || 0),
+        );
+
+        const result = designShortBracedColumn({
+          load_kN: axialLoadUsed,
+          width_mm: b_mm,
+          depth_mm: h_mm,
+          clearHeight_mm: solverMember.length * 1000,
+          fcu: assumptions.fcu,
+          fy: assumptions.fy,
+        });
+
+        columns.push({
+          memberLabel,
+          status: result.status,
+          message: result.message,
+          axialLoadUsed,
+          result,
+        });
+        return;
+      }
+
+      columns.push({
+        memberLabel,
+        status: "SKIPPED",
+        message: "Only beam/column members are included in this design view.",
+        axialLoadUsed: null,
+        result: null,
+      });
+    });
+
+    return { assumptions, beams, columns };
+  };
+
   const formattedSolveData = (() => {
     if (!solveResults) return solveData;
 
@@ -288,6 +583,30 @@ function AnalysisContent() {
       }
     });
 
+    if (solveResults.design.beams.length || solveResults.design.columns.length) {
+      const a = solveResults.design.assumptions;
+      reportText += "\nDesign Mode Results (BS 8110 workflow):\n";
+      reportText += `  Assumptions: fcu=${a.fcu}N/mm^2, fy=${a.fy}N/mm^2, cover=${a.concreteCover_mm}mm, links=${a.linkDiameter_mm}mm, mainBar=${a.mainBarDiameter_mm}mm\n`;
+
+      solveResults.design.beams.forEach((beam) => {
+        reportText += `  ${beam.memberLabel} Beam [${beam.status}]\n`;
+        reportText += `     ${beam.message}\n`;
+        if (beam.flexure) {
+          reportText += `     d=${beam.flexure.d.toFixed(2)} mm, As,min=${beam.flexure.AsMin.toFixed(2)} mm^2, As,max=${beam.flexure.AsMax.toFixed(2)} mm^2\n`;
+          reportText += `     Support: K=${beam.flexure.support.K?.toFixed(4) ?? "-"}, z=${beam.flexure.support.z?.toFixed(2) ?? "-"} mm, As(req)=${beam.flexure.topSteelRequired?.toFixed(2) ?? "-"} mm^2, As(prov)=${beam.supportBars ? `${beam.supportBars.area.toFixed(2)} mm^2 (${beam.supportBars.label})` : "-"}\n`;
+          reportText += `     Span: K=${beam.flexure.span.K?.toFixed(4) ?? "-"}, z=${beam.flexure.span.z?.toFixed(2) ?? "-"} mm, As(req)=${beam.flexure.bottomSteelRequired?.toFixed(2) ?? "-"} mm^2, As(prov)=${beam.spanBars ? `${beam.spanBars.area.toFixed(2)} mm^2 (${beam.spanBars.label})` : "-"}\n`;
+        }
+      });
+
+      solveResults.design.columns.forEach((col) => {
+        reportText += `  ${col.memberLabel} Column [${col.status}]\n`;
+        reportText += `     ${col.message}\n`;
+        if (col.axialLoadUsed !== null) {
+          reportText += `     Axial load used: ${col.axialLoadUsed.toFixed(2)} kN\n`;
+        }
+      });
+    }
+
     return reportText;
   })();
 
@@ -315,16 +634,17 @@ function AnalysisContent() {
         const nKey = JSON.stringify(n);
         const supportData = nodeSupports[nKey];
         const supportType = supportData?.type || "None";
+        const settlement = isFrameMode ? 0 : supportData?.settlement || 0;
 
         let support: SolverSupport | null = null;
         if (supportType === "Fixed") {
-          support = new FixedSupport(n.x, n.y, lastSupport, 0);
+          support = new FixedSupport(n.x, n.y, lastSupport, settlement);
           lastSupport = support;
         } else if (supportType === "Pinned") {
-          support = new PinnedSupport(n.x, n.y, lastSupport, 0);
+          support = new PinnedSupport(n.x, n.y, lastSupport, settlement);
           lastSupport = support;
         } else if (supportType === "Roller") {
-          support = new RollerSupport(n.x, n.y, lastSupport, 0);
+          support = new RollerSupport(n.x, n.y, lastSupport, settlement);
           lastSupport = support;
         }
 
@@ -619,12 +939,15 @@ function AnalysisContent() {
         },
       );
 
+      const design = computeDesignResults(members, solverMembers, endMoments);
+
       setSolveResults({
         fems,
         endMoments,
         reactions,
         frameSidesway,
         beamDiagrams,
+        design,
       });
       setSolveData(reportText);
       setActiveModal("solve");
@@ -1276,6 +1599,7 @@ function AnalysisContent() {
                     ))}
                   </div>
                 </section>
+
               </>
             )}
 
@@ -1363,6 +1687,168 @@ function AnalysisContent() {
                   resultUnits={resultUnits}
                 />
               ))}
+
+            {(solveResults &&
+              (solveResults.design.beams.length > 0 ||
+                solveResults.design.columns.length > 0)) && (
+              <section>
+                <div className="mb-6 rounded-2xl border border-white/10 bg-gradient-to-r from-amber-500/10 via-orange-500/5 to-emerald-500/10 p-5">
+                  <p className="text-[10px] font-black uppercase tracking-[0.22em] text-amber-300">
+                    Design Studio
+                  </p>
+                  <h3 className="mt-1 text-xl font-black tracking-tight text-white">
+                    RCC Design Results (Workflow: Design Mode)
+                  </h3>
+                  <p className="mt-2 text-[11px] text-gray-400">
+                    Computed from solved force envelopes using the existing RCC
+                    design workflow.
+                  </p>
+                  <p className="mt-2 text-[10px] text-gray-500">
+                    Assumptions: fcu {solveResults.design.assumptions.fcu} N/mm^2, fy{" "}
+                    {solveResults.design.assumptions.fy} N/mm^2, cover{" "}
+                    {solveResults.design.assumptions.concreteCover_mm} mm, links{" "}
+                    {solveResults.design.assumptions.linkDiameter_mm} mm.
+                  </p>
+                  <p className="mt-2 text-[10px] text-gray-500">
+                    Mu+ is maximum sagging (positive) design moment, Mu- is
+                    maximum hogging (negative) design moment.
+                  </p>
+                </div>
+
+                {solveResults.design.beams.length > 0 && (
+                  <div className="space-y-4">
+                    {solveResults.design.beams.map((beam) => (
+                      <article
+                        key={`design-beam-${beam.memberLabel}`}
+                        className="rounded-2xl border border-white/10 bg-[#0b0b0b] p-5 shadow-2xl"
+                      >
+                        <div className="mb-3 flex items-center justify-between gap-4">
+                          <h4 className="text-sm font-black uppercase tracking-widest text-gray-200">
+                            {beam.memberLabel} Beam
+                          </h4>
+                          <span
+                            className={`rounded-full px-3 py-1 text-[9px] font-black uppercase tracking-widest ${
+                              beam.status === "OK"
+                                ? "bg-emerald-500/20 text-emerald-300"
+                                : beam.status === "CHECK"
+                                  ? "bg-amber-500/20 text-amber-300"
+                                  : "bg-red-500/20 text-red-300"
+                            }`}
+                          >
+                            {beam.status}
+                          </span>
+                        </div>
+
+                        <p className="text-[11px] text-gray-400 mb-3">
+                          {beam.message}
+                        </p>
+
+                        {beam.flexure && (
+                          <>
+                            <div className="mb-3 grid grid-cols-1 sm:grid-cols-4 gap-2 text-[10px]">
+                              <div className="rounded-xl border border-white/5 bg-white/[0.02] p-2">
+                                d: {beam.flexure.d.toFixed(2)} mm
+                              </div>
+                              <div className="rounded-xl border border-white/5 bg-white/[0.02] p-2">
+                                As,min: {beam.flexure.AsMin.toFixed(2)} mm^2
+                              </div>
+                              <div className="rounded-xl border border-white/5 bg-white/[0.02] p-2">
+                                As,max: {beam.flexure.AsMax.toFixed(2)} mm^2
+                              </div>
+                              <div className="rounded-xl border border-white/5 bg-white/[0.02] p-2">
+                                Mu+ (sagging) / Mu- (hogging):{" "}
+                                {beam.spanMoment?.toFixed(2) ?? "-"} /{" "}
+                                {beam.supportMoment?.toFixed(2) ?? "-"} kNm
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                              <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">
+                                  Support Zone
+                                </p>
+                                <div className="grid grid-cols-2 gap-2 text-[10px]">
+                                  <p>K: {beam.flexure.support.K?.toFixed(4) ?? "-"}</p>
+                                  <p>z: {beam.flexure.support.z?.toFixed(2) ?? "-"} mm</p>
+                                  <p>x: {beam.flexure.support.x?.toFixed(2) ?? "-"} mm</p>
+                                  <p>As req: {beam.flexure.topSteelRequired?.toFixed(2) ?? "-"} mm^2</p>
+                                  <p className="col-span-2">
+                                    As prov:{" "}
+                                    {beam.supportBars
+                                      ? `${beam.supportBars.area.toFixed(2)} mm^2 (${beam.supportBars.label})`
+                                      : "-"}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">
+                                  Span Zone
+                                </p>
+                                <div className="grid grid-cols-2 gap-2 text-[10px]">
+                                  <p>K: {beam.flexure.span.K?.toFixed(4) ?? "-"}</p>
+                                  <p>z: {beam.flexure.span.z?.toFixed(2) ?? "-"} mm</p>
+                                  <p>x: {beam.flexure.span.x?.toFixed(2) ?? "-"} mm</p>
+                                  <p>As req: {beam.flexure.bottomSteelRequired?.toFixed(2) ?? "-"} mm^2</p>
+                                  <p className="col-span-2">
+                                    As prov:{" "}
+                                    {beam.spanBars
+                                      ? `${beam.spanBars.area.toFixed(2)} mm^2 (${beam.spanBars.label})`
+                                      : "-"}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          </>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                )}
+
+                {solveResults.design.columns.length > 0 && (
+                  <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {solveResults.design.columns.map((column) => (
+                      <article
+                        key={`design-col-${column.memberLabel}`}
+                        className="rounded-2xl border border-white/10 bg-[#0b0b0b] p-5"
+                      >
+                        <div className="mb-2 flex items-center justify-between">
+                          <h4 className="text-sm font-black uppercase tracking-widest text-gray-200">
+                            {column.memberLabel} Column
+                          </h4>
+                          <span
+                            className={`rounded-full px-3 py-1 text-[9px] font-black uppercase tracking-widest ${
+                              column.status === "SUCCESS"
+                                ? "bg-emerald-500/20 text-emerald-300"
+                                : column.status === "SKIPPED"
+                                  ? "bg-white/10 text-gray-300"
+                                  : "bg-amber-500/20 text-amber-300"
+                            }`}
+                          >
+                            {column.status}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-gray-400">{column.message}</p>
+                        {column.axialLoadUsed !== null && (
+                          <p className="mt-2 text-[10px] text-gray-500">
+                            Axial load used: {column.axialLoadUsed.toFixed(2)} kN
+                          </p>
+                        )}
+                        {column.result?.status === "SUCCESS" && (
+                          <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
+                            <p>Asc req: {column.result.steelRequiredArea ?? 0} mm^2</p>
+                            <p>Provided: {column.result.providedSteel ?? "-"}</p>
+                            <p>Asc prov: {column.result.providedArea ?? 0} mm^2</p>
+                            <p>Links: {column.result.links ?? "-"}</p>
+                          </div>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
           </div>
 
           <footer className="mt-8 flex justify-center">
