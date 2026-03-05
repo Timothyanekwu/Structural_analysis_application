@@ -889,12 +889,7 @@ export default function MemberForm({
                         ["concreteCover_mm", "Cover (mm)"],
                         ["linkDiameter_mm", "Link Dia (mm)"],
                         ["fyv", "fyv (N/mm^2)"],
-                      ] as Array<
-                        [
-                          keyof typeof designParams,
-                          string,
-                        ]
-                      >
+                      ] as Array<[keyof typeof designParams, string]>
                     ).map(([key, label]) => (
                       <div key={`rcc-param-${key}`} className="space-y-1">
                         <label className="text-[9px] font-black uppercase text-gray-500 ml-1 block tracking-widest">
@@ -983,9 +978,9 @@ export default function MemberForm({
                 </div>
                 <p className="sm:col-span-2 text-[9px] text-gray-600 leading-relaxed px-1">
                   In Design mode, I auto-updates from geometry (using beam own
-                  depth = h - slab thickness for beams). Enable constant mode
-                  to lock the value at 1. In Analysis mode, provide I
-                  explicitly if constant mode is off.
+                  depth = h - slab thickness for beams). Enable constant mode to
+                  lock the value at 1. In Analysis mode, provide I explicitly if
+                  constant mode is off.
                 </p>
               </div>
             </div>
@@ -1062,7 +1057,7 @@ export default function MemberForm({
                       onChange={(val) =>
                         setNewLoad({ ...newLoad, position: val })
                       }
-                      label="Position (from left)"
+                      label="Position from Start Node"
                       placeholder="0.00"
                     />
                   </div>

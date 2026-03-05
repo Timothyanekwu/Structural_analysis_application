@@ -66,29 +66,28 @@ export class SlopeDeflection {
     return flatResult;
   };
 
-  kahanPush = (arr: Term[], term: Term, compMap: { [key: string]: number }) => {
-    if (!term.coefficient || term.coefficient === 0) return;
+  // kahanPush = (arr: Term[], term: Term, compMap: { [key: string]: number }) => {
+  //   if (!term.coefficient || term.coefficient === 0) return;
 
-    if (!(term.name in compMap)) {
-      // first occurrence
-      arr.push({ ...term });
-      compMap[term.name] = 0; // initialize compensation
-    } else {
-      // Kahan summation
-      const existing = arr.find((t) => t.name === term.name)!;
-      const y = term.coefficient - compMap[term.name];
-      const t = existing.coefficient + y;
-      compMap[term.name] = t - existing.coefficient - y;
-      existing.coefficient = t;
-    }
-  };
+  //   if (!(term.name in compMap)) {
+  //     // first occurrence
+  //     arr.push({ ...term });
+  //     compMap[term.name] = 0; // initialize compensation
+  //   } else {
+  //     // Kahan summation
+  //     const existing = arr.find((t) => t.name === term.name)!;
+  //     const y = term.coefficient - compMap[term.name];
+  //     const t = existing.coefficient + y;
+  //     compMap[term.name] = t - existing.coefficient - y;
+  //     existing.coefficient = t;
+  //   }
+  // };
 
   updatedSupportEquation(node: Node) {
     const Emember: { [key: string]: number } = {};
     const Imember: { [key: string]: number } = {};
 
-    // console.log("NODE: ", node.id);
-
+    // we want to store the E and I values or each members connected to the node in the variable "Emember" and "Imember" as an Object
     for (const member of node.connectedMembers) {
       Emember[
         `member${member.member.startNode.id}${member.member.endNode.id}`
@@ -99,10 +98,8 @@ export class SlopeDeflection {
       ] = member.member.Icoef;
     }
 
+    // we instantiate the FixedEndMoments class (ready to be used)
     const fem = new FixedEndMoments();
-
-    // let clk: Term[] = [];
-    // let antiClk: Term[] = [];
 
     let clk: { [key: string]: Term[] } = {};
     let antiClk: { [key: string]: Term[] } = {};
