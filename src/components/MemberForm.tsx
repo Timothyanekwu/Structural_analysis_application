@@ -310,6 +310,11 @@ export default function MemberForm({
     sectionProps.slabThickness,
   ]);
 
+  const resolveLoadAngle = (angle: number | "") => {
+    const parsed = Number(angle);
+    return Number.isFinite(parsed) ? parsed : 90;
+  };
+
   const addLoad = () => {
     if (newLoad.value === "") return;
     setLoads([
@@ -323,7 +328,7 @@ export default function MemberForm({
             ? Number(newLoad.highPosition || 0)
             : Number(newLoad.position || 0),
         span: newLoad.type === "UDL" ? Number(newLoad.span || 0) : undefined,
-        angle: Number(newLoad.angle || 90),
+        angle: resolveLoadAngle(newLoad.angle),
         // VDL specific
         highValue: newLoad.type === "VDL" ? Number(newLoad.value) : undefined,
         highPosition:
@@ -1135,22 +1140,18 @@ export default function MemberForm({
                     <input
                       type="number"
                       value={newLoad.angle}
-                      onChange={(e) =>
-                        setNewLoad({
-                          ...newLoad,
-                          angle:
-                            e.target.value === ""
-                              ? ""
-                              : Math.max(
-                                  90,
-                                  Math.min(360, Number(e.target.value)),
-                                ),
-                        })
-                      }
-                      min={90}
-                      max={360}
+                      onChange={(e) => {
+                        if (e.target.value === "") {
+                          setNewLoad({ ...newLoad, angle: "" });
+                          return;
+                        }
+                        const parsed = Number(e.target.value);
+                        if (!Number.isFinite(parsed)) return;
+                        setNewLoad({ ...newLoad, angle: parsed });
+                      }}
+                      step="any"
                       className="no-spinner w-full bg-black border border-[var(--accent)]/30 rounded-xl px-4 py-2 text-xs font-bold outline-none focus:border-[var(--accent)] bg-[var(--accent-glow)]/5"
-                      placeholder="90 - 360"
+                      placeholder="Any numeric angle"
                     />
                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-[var(--accent)]">
                       deg
