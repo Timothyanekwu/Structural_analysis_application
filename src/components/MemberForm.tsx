@@ -66,11 +66,25 @@ export default function MemberForm({
   },
 }: MemberFormProps) {
   const isBeamMode = mode === "beams";
+  const normalizeCoord = (value: number) => Number(value.toFixed(6));
+  const nodeKey = (point: { x: number; y: number }) =>
+    `${normalizeCoord(Number(point.x))}|${normalizeCoord(Number(point.y))}`;
+  const indexToAlphaLabel = (index: number) => {
+    let value = index + 1;
+    let label = "";
+    while (value > 0) {
+      value -= 1;
+      label = String.fromCharCode(65 + (value % 26)) + label;
+      value = Math.floor(value / 26);
+    }
+    return label;
+  };
 
   // Logic for finding initial selected node index
   const findNodeIndex = (p?: { x: number; y: number }) => {
     if (!p) return -1;
-    return existingNodes.findIndex((n) => n.x === p.x && n.y === p.y);
+    const targetKey = nodeKey(p);
+    return existingNodes.findIndex((n) => nodeKey(n) === targetKey);
   };
 
   const [memberType, setMemberType] = useState<"Beam" | "Column" | "Inclined">(
@@ -233,7 +247,7 @@ export default function MemberForm({
         setEndNode((prev) => ({ ...prev, y: n.y }));
       }
 
-      const sData = nodeSupports[JSON.stringify(n)];
+      const sData = nodeSupports[nodeKey(n)];
       if (sData) {
         if (typeof sData === "string") {
           setSupports((prev) => ({ ...prev, start: sData as SupportType }));
@@ -266,7 +280,7 @@ export default function MemberForm({
         setStartNode((prev) => ({ ...prev, y: n.y }));
       }
 
-      const sData = nodeSupports[JSON.stringify(n)];
+      const sData = nodeSupports[nodeKey(n)];
       if (sData) {
         if (typeof sData === "string") {
           setSupports((prev) => ({ ...prev, end: sData as SupportType }));
@@ -606,8 +620,8 @@ export default function MemberForm({
                   {existingNodes.map((n, i) => (
                     <option key={i} value={i}>
                       {isBeamMode
-                        ? `Anchor N${i + 1} (${n.x}m)`
-                        : `N${i + 1} (${n.x}, ${n.y})m`}
+                        ? `Anchor ${indexToAlphaLabel(i)} (${n.x}m)`
+                        : `${indexToAlphaLabel(i)} (${n.x}, ${n.y})m`}
                     </option>
                   ))}
                 </select>
@@ -681,8 +695,8 @@ export default function MemberForm({
                   {existingNodes.map((n, i) => (
                     <option key={i} value={i}>
                       {isBeamMode
-                        ? `Anchor N${i + 1} (${n.x}m)`
-                        : `N${i + 1} (${n.x}, ${n.y})m`}
+                        ? `Anchor ${indexToAlphaLabel(i)} (${n.x}m)`
+                        : `${indexToAlphaLabel(i)} (${n.x}, ${n.y})m`}
                     </option>
                   ))}
                 </select>

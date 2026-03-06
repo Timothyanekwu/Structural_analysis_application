@@ -59,6 +59,20 @@ type ResultUnitPreference = {
 
 type SolveReaction = { id: string; x?: number; y: number; m?: number };
 type BeamMemberDiagram = { span: string; data: BeamInternalForcePoint[] };
+type SymbolicMomentTerm = { name: string; coefficient: number };
+type SymbolicSupportEquation = {
+  clk: Record<string, SymbolicMomentTerm[]>;
+  antiClk: Record<string, SymbolicMomentTerm[]>;
+};
+type MemberEndMomentEquation = {
+  key: string;
+  expression: string;
+};
+
+type SupportResolutionResult = {
+  supports: Record<string, { type: string; settlement: number }>;
+  conflicts: string[];
+};
 type FrontJointAction = NonNullable<Member["jointActions"]>["start"];
 type ProvidedBars = {
   count: number;
@@ -134,6 +148,7 @@ type DesignResults = {
 };
 type SolveResults = {
   fems: { span: string; start: number; end: number }[];
+  memberEndMomentEquations: MemberEndMomentEquation[];
   endMoments: { span: string; left: number; right: number }[];
   reactions: SolveReaction[];
   frameSidesway: boolean | null;
@@ -234,6 +249,112 @@ function AnalysisContent() {
     };
   });
 
+  const normalizeCoord = (value: number) => Number(value.toFixed(6));
+  const normalizeNode = (node: { x: number; y: number }) => ({
+    x: normalizeCoord(Number(node.x)),
+    y: normalizeCoord(Number(node.y)),
+  });
+  const nodeKey = (node: { x: number; y: number }) => {
+    const normalized = normalizeNode(node);
+    return `${normalized.x}|${normalized.y}`;
+  };
+  const indexToAlphaLabel = (index: number) => {
+    if (!Number.isFinite(index) || index < 1) return String(index);
+    let value = Math.floor(index);
+    let label = "";
+    while (value > 0) {
+      value -= 1;
+      label = String.fromCharCode(65 + (value % 26)) + label;
+      value = Math.floor(value / 26);
+    }
+    return label;
+  };
+  const solverNodeIdToLabel = (nodeId: string) => {
+    const match = nodeId.match(/^N(\d+)$/i);
+    if (!match) return nodeId;
+    return indexToAlphaLabel(Number(match[1]));
+  };
+  const formatReactionLabel = (id: string) => {
+    const supportMatch = id.match(/^SUPPORT(.+)$/i);
+    if (supportMatch) {
+      return `Support ${solverNodeIdToLabel(supportMatch[1])}`;
+    }
+    if (/^N\d+$/i.test(id)) {
+      return `Support ${solverNodeIdToLabel(id)}`;
+    }
+    return id;
+  };
+  const formatMomentEquationKey = (key: string) => {
+    const match = key.match(/^MOMENT(N\d+)(N\d+)$/i);
+    if (!match) return key;
+    const left = solverNodeIdToLabel(match[1]);
+    const right = solverNodeIdToLabel(match[2]);
+    return `M${left}${right}`;
+  };
+
+  const resolveSupportAssignments = (
+    frontendMembers: Member[],
+    frameMode: boolean,
+  ): SupportResolutionResult => {
+    const supports: Record<string, { type: string; settlement: number }> = {};
+    const conflicts: string[] = [];
+    const tol = 1e-9;
+
+    const register = (
+      key: string,
+      node: { x: number; y: number },
+      type: string,
+      settlement: number,
+      memberIndex: number,
+    ) => {
+      const existing = supports[key];
+      if (!existing) {
+        supports[key] = { type, settlement };
+        return;
+      }
+      if (
+        existing.type !== type ||
+        (!frameMode && Math.abs(existing.settlement - settlement) > tol)
+      ) {
+        conflicts.push(
+          `(${normalizeCoord(node.x)}, ${normalizeCoord(node.y)}): member ${memberIndex + 1} has ${type} (settlement=${settlement}), existing is ${existing.type} (settlement=${existing.settlement})`,
+        );
+      }
+    };
+
+    frontendMembers.forEach((member, memberIndex) => {
+      const normalizedStart = normalizeNode(member.startNode);
+      const normalizedEnd = normalizeNode(member.endNode);
+      const sSettlement = frameMode
+        ? 0
+        : Number(member.supports.startSettlement || 0);
+      const eSettlement = frameMode
+        ? 0
+        : Number(member.supports.endSettlement || 0);
+
+      if (member.supports.start !== "None") {
+        register(
+          nodeKey(normalizedStart),
+          normalizedStart,
+          member.supports.start,
+          sSettlement,
+          memberIndex,
+        );
+      }
+      if (member.supports.end !== "None") {
+        register(
+          nodeKey(normalizedEnd),
+          normalizedEnd,
+          member.supports.end,
+          eSettlement,
+          memberIndex,
+        );
+      }
+    });
+
+    return { supports, conflicts };
+  };
+
   // Compute diagram data for overlay when solve results are available
   const diagramData: MemberDiagramData[] = useMemo(() => {
     if (!solveResults || !members.length) return [];
@@ -254,15 +375,291 @@ function AnalysisContent() {
     });
   }, [isFrameMode, members, solveResults]);
 
-  const handleCreateMember = (data: any) => {
-    if (editingIndex !== null) {
-      const updated = [...members];
-      updated[editingIndex] = data;
-      setMembers(updated);
-      setEditingIndex(null);
-    } else {
-      setMembers([...members, data]);
+  const formatSymbolicCoefficient = (value: number) => {
+    const rounded = Number(value.toFixed(6));
+    if (Object.is(rounded, -0) || Math.abs(rounded) < 1e-12) return "0";
+    return rounded.toString();
+  };
+
+  const formatSignedExpression = (
+    terms: { coefficient: number; text: string }[],
+    zeroFallback: string = "0",
+  ) => {
+    const filtered = terms.filter(
+      (term) =>
+        Number.isFinite(term.coefficient) && Math.abs(term.coefficient) > 1e-12,
+    );
+    if (!filtered.length) return zeroFallback;
+
+    return filtered
+      .map((term, idx) => {
+        const sign = term.coefficient < 0 ? "-" : "+";
+        if (idx === 0) return sign === "-" ? `-${term.text}` : term.text;
+        return ` ${sign} ${term.text}`;
+      })
+      .join("");
+  };
+
+  const resolveMomentKeyContext = (
+    key: string,
+    solverMembers: (Beam | Column | InclinedMember)[],
+  ) => {
+    for (const member of solverMembers) {
+      const startKey = `MOMENT${member.startNode.id}${member.endNode.id}`;
+      const endKey = `MOMENT${member.endNode.id}${member.startNode.id}`;
+
+      if (key === startKey) {
+        return {
+          member,
+          nearId: member.startNode.id,
+          farId: member.endNode.id,
+        };
+      }
+      if (key === endKey) {
+        return {
+          member,
+          nearId: member.endNode.id,
+          farId: member.startNode.id,
+        };
+      }
     }
+    return null;
+  };
+
+  const toValueStyleSlopeDeflectionExpression = (
+    key: string,
+    terms: SymbolicMomentTerm[],
+    solverMembers: (Beam | Column | InclinedMember)[],
+  ) => {
+    const context = resolveMomentKeyContext(key, solverMembers);
+    if (!context) return formatMemberEndMomentExpression(terms);
+
+    const { member, nearId, farId } = context;
+    const E = Number(member.Ecoef ?? 0);
+    const I = Number(member.Icoef ?? 0);
+    const L = Number(member.length ?? 0);
+    const base = L !== 0 ? (2 * E * I) / L : 0;
+
+    const nearThetaNames = [`THETA_${nearId}`, `EIteta${nearId}`];
+    const farThetaNames = [`THETA_${farId}`, `EIteta${farId}`];
+    const nearThetaVar = terms.find((t) => nearThetaNames.includes(t.name))
+      ?.name;
+    const farThetaVar = terms.find((t) => farThetaNames.includes(t.name))
+      ?.name;
+    const toUnknownLabel = (name: string) => {
+      if (name.startsWith("THETA_")) {
+        return `THETA(${solverNodeIdToLabel(name.slice(6))})`;
+      }
+      if (name.startsWith("EIteta")) {
+        return `THETA(${solverNodeIdToLabel(name.slice(6))})`;
+      }
+      if (name.startsWith("DELTA_")) return `DELTA(${name.slice(6)})`;
+      return name;
+    };
+
+    let constant = 0;
+    let nearCoeff = 0;
+    let farCoeff = 0;
+    const restTerms: SymbolicMomentTerm[] = [];
+
+    for (const term of terms) {
+      if (!Number.isFinite(term.coefficient)) continue;
+      if (term.name === "c") {
+        constant += term.coefficient;
+      } else if (term.name === "EIdeta") {
+        // In beam slope-deflection assembly, EIdeta is folded into the constant term.
+        constant += term.coefficient;
+      } else if (nearThetaVar && term.name === nearThetaVar) {
+        nearCoeff += term.coefficient;
+      } else if (farThetaVar && term.name === farThetaVar) {
+        farCoeff += term.coefficient;
+      } else {
+        restTerms.push(term);
+      }
+    }
+
+    const pieces: { coefficient: number; text: string }[] = [
+      {
+        coefficient: constant,
+        text: formatSymbolicCoefficient(Math.abs(constant)),
+      },
+    ];
+
+    if (
+      Math.abs(base) > 1e-12 &&
+      (Math.abs(nearCoeff) > 1e-12 || Math.abs(farCoeff) > 1e-12)
+    ) {
+      const nearFactor = nearCoeff / base;
+      const farFactor = farCoeff / base;
+
+      const bracketText = formatSignedExpression(
+        [
+          nearThetaVar
+            ? {
+                coefficient: nearFactor,
+                text: `${formatSymbolicCoefficient(Math.abs(nearFactor))}*${toUnknownLabel(nearThetaVar)}`,
+              }
+            : null,
+          farThetaVar
+            ? {
+                coefficient: farFactor,
+                text: `${formatSymbolicCoefficient(Math.abs(farFactor))}*${toUnknownLabel(farThetaVar)}`,
+              }
+            : null,
+        ].filter(Boolean) as { coefficient: number; text: string }[],
+        "0",
+      );
+
+      const baseText = `(2*${formatSymbolicCoefficient(E)}*${formatSymbolicCoefficient(I)}/${formatSymbolicCoefficient(L)})`;
+      pieces.push({
+        coefficient: 1,
+        text: `${baseText}*(${bracketText})`,
+      });
+    } else {
+      if (nearThetaVar && Math.abs(nearCoeff) > 1e-12) {
+        pieces.push({
+          coefficient: nearCoeff,
+          text: `${formatSymbolicCoefficient(Math.abs(nearCoeff))}*${toUnknownLabel(nearThetaVar)}`,
+        });
+      }
+      if (farThetaVar && Math.abs(farCoeff) > 1e-12) {
+        pieces.push({
+          coefficient: farCoeff,
+          text: `${formatSymbolicCoefficient(Math.abs(farCoeff))}*${toUnknownLabel(farThetaVar)}`,
+        });
+      }
+    }
+
+    restTerms.forEach((term) => {
+      pieces.push({
+        coefficient: term.coefficient,
+        text: `${formatSymbolicCoefficient(Math.abs(term.coefficient))}*${toUnknownLabel(term.name)}`,
+      });
+    });
+
+    return formatSignedExpression(pieces);
+  };
+
+  const formatMemberEndMomentExpression = (terms: SymbolicMomentTerm[]) => {
+    if (!terms.length) return "0";
+
+    return terms
+      .map((term, idx) => {
+        const coeff = Number.isFinite(term.coefficient) ? term.coefficient : 0;
+        const sign = coeff < 0 ? "-" : "+";
+        const coeffText = formatSymbolicCoefficient(Math.abs(coeff));
+        const core = `${coeffText}*${term.name}`;
+
+        if (idx === 0) {
+          return sign === "-" ? `-${core}` : core;
+        }
+        return ` ${sign} ${core}`;
+      })
+      .join("");
+  };
+
+  const getMemberEndMomentEquations = (
+    supportMoments: SymbolicSupportEquation[],
+    solverMembers: (Beam | Column | InclinedMember)[],
+  ): MemberEndMomentEquation[] => {
+    const equations: MemberEndMomentEquation[] = [];
+    supportMoments.forEach((equation) => {
+      Object.entries({ ...equation.clk, ...equation.antiClk }).forEach(
+        ([key, terms]) => {
+          equations.push({
+            key: formatMomentEquationKey(key),
+            expression: toValueStyleSlopeDeflectionExpression(
+              key,
+              terms,
+              solverMembers,
+            ),
+          });
+        },
+      );
+    });
+
+    return equations.sort((a, b) => a.key.localeCompare(b.key));
+  };
+
+  const normalizeMemberNodes = (member: Member): Member => ({
+    ...member,
+    startNode: normalizeNode(member.startNode),
+    endNode: normalizeNode(member.endNode),
+  });
+
+  const propagateNodeSupportToConnectedMembers = (
+    frontendMembers: Member[],
+    node: { x: number; y: number },
+    supportType: Member["supports"]["start"],
+    settlement: number,
+  ) => {
+    const key = nodeKey(node);
+    return frontendMembers.map((member) => {
+      const matchesStart = nodeKey(member.startNode) === key;
+      const matchesEnd = nodeKey(member.endNode) === key;
+      if (!matchesStart && !matchesEnd) return member;
+
+      const nextSupports = { ...member.supports };
+      if (matchesStart) {
+        nextSupports.start = supportType;
+        nextSupports.startSettlement = isFrameMode
+          ? 0
+          : supportType === "None"
+            ? 0
+            : settlement;
+      }
+      if (matchesEnd) {
+        nextSupports.end = supportType;
+        nextSupports.endSettlement = isFrameMode
+          ? 0
+          : supportType === "None"
+            ? 0
+            : settlement;
+      }
+
+      return { ...member, supports: nextSupports };
+    });
+  };
+
+  const handleCreateMember = (data: any) => {
+    const normalizedData = normalizeMemberNodes(data as Member);
+    const baseMembers =
+      editingIndex !== null
+        ? members.map((member, idx) =>
+            idx === editingIndex ? normalizedData : member,
+          )
+        : [...members, normalizedData];
+
+    const editedMemberIndex =
+      editingIndex !== null ? editingIndex : baseMembers.length - 1;
+    const editedMember = baseMembers[editedMemberIndex];
+
+    let nextMembers = propagateNodeSupportToConnectedMembers(
+      baseMembers,
+      editedMember.startNode,
+      editedMember.supports.start,
+      Number(editedMember.supports.startSettlement || 0),
+    );
+    nextMembers = propagateNodeSupportToConnectedMembers(
+      nextMembers,
+      editedMember.endNode,
+      editedMember.supports.end,
+      Number(editedMember.supports.endSettlement || 0),
+    );
+
+    const nextSupportResolution = resolveSupportAssignments(
+      nextMembers,
+      isFrameMode,
+    );
+    if (nextSupportResolution.conflicts.length) {
+      alert(
+        `Conflicting support assignments detected:\n${nextSupportResolution.conflicts.join("\n")}\n\nA node can only have one support condition. Edit the existing connected member/support instead of assigning a different support at the same node.`,
+      );
+      return;
+    }
+
+    setMembers(nextMembers);
+    setEditingIndex(null);
     setActiveModal("none");
   };
 
@@ -283,14 +680,14 @@ function AnalysisContent() {
   );
 
   const uniqueNodes = useMemo(() => {
-    const nodes = Array.from(
-      new Set(
-        members.flatMap((m) => [
-          JSON.stringify(m.startNode),
-          JSON.stringify(m.endNode),
-        ]),
-      ),
-    ).map((s) => JSON.parse(s) as { x: number; y: number });
+    const nodeMap = new Map<string, { x: number; y: number }>();
+    members.forEach((member) => {
+      const start = normalizeNode(member.startNode);
+      const end = normalizeNode(member.endNode);
+      nodeMap.set(nodeKey(start), start);
+      nodeMap.set(nodeKey(end), end);
+    });
+    const nodes = Array.from(nodeMap.values());
 
     // Spatial sorting is critical for sequential support linking and logical ID generation
     return nodes.sort((a, b) => {
@@ -299,62 +696,19 @@ function AnalysisContent() {
     });
   }, [members]);
 
-  const supportResolution = useMemo(() => {
-    const supports: Record<string, { type: string; settlement: number }> = {};
-    const conflicts: string[] = [];
-    const tol = 1e-9;
-
-    const register = (
-      key: string,
-      nodeLabel: string,
-      type: string,
-      settlement: number,
-      memberIndex: number,
-    ) => {
-      const existing = supports[key];
-      if (!existing) {
-        supports[key] = { type, settlement };
-        return;
-      }
-      if (
-        existing.type !== type ||
-        (!isFrameMode && Math.abs(existing.settlement - settlement) > tol)
-      ) {
-        conflicts.push(
-          `${nodeLabel}: member ${memberIndex + 1} has ${type} (settlement=${settlement}), existing is ${existing.type} (settlement=${existing.settlement})`,
-        );
-      }
-    };
-
-    members.forEach((m, memberIndex) => {
-      const sKey = JSON.stringify(m.startNode);
-      const eKey = JSON.stringify(m.endNode);
-      const sSettlement = isFrameMode
-        ? 0
-        : Number(m.supports.startSettlement || 0);
-      const eSettlement = isFrameMode ? 0 : Number(m.supports.endSettlement || 0);
-
-      if (m.supports.start !== "None") {
-        register(
-          sKey,
-          `(${m.startNode.x}, ${m.startNode.y})`,
-          m.supports.start,
-          sSettlement,
-          memberIndex,
-        );
-      }
-      if (m.supports.end !== "None") {
-        register(
-          eKey,
-          `(${m.endNode.x}, ${m.endNode.y})`,
-          m.supports.end,
-          eSettlement,
-          memberIndex,
-        );
-      }
+  const nodeLabelByKey = useMemo(() => {
+    const labels = new Map<string, string>();
+    uniqueNodes.forEach((node, index) => {
+      labels.set(nodeKey(node), indexToAlphaLabel(index + 1));
     });
+    return labels;
+  }, [uniqueNodes]);
 
-    return { supports, conflicts };
+  const frontendNodeLabel = (node: { x: number; y: number }) =>
+    nodeLabelByKey.get(nodeKey(node)) ?? `(${node.x}, ${node.y})`;
+
+  const supportResolution = useMemo(() => {
+    return resolveSupportAssignments(members, isFrameMode);
   }, [members, isFrameMode]);
 
   const nodeSupports = supportResolution.supports;
@@ -388,8 +742,8 @@ function AnalysisContent() {
     };
 
     members.forEach((m) => {
-      const sKey = JSON.stringify(m.startNode);
-      const eKey = JSON.stringify(m.endNode);
+      const sKey = nodeKey(m.startNode);
+      const eKey = nodeKey(m.endNode);
       register(sKey, m.jointActions?.start);
       register(eKey, m.jointActions?.end);
     });
@@ -702,14 +1056,14 @@ function AnalysisContent() {
         }
 
         collectSupportDemand(
-          solverMember.startNode.id,
+          solverNodeIdToLabel(solverMember.startNode.id),
           Math.abs(solved.left),
           memberLabel,
           b_mm,
           h_mm,
         );
         collectSupportDemand(
-          solverMember.endNode.id,
+          solverNodeIdToLabel(solverMember.endNode.id),
           Math.abs(solved.right),
           memberLabel,
           b_mm,
@@ -1090,7 +1444,7 @@ function AnalysisContent() {
       let lastSupport: SolverSupport | null = null;
 
       uniqueNodes.forEach((n, idx) => {
-        const nKey = JSON.stringify(n);
+        const nKey = nodeKey(n);
         const supportData = nodeSupports[nKey];
         const supportType = supportData?.type || "None";
         const settlement = isFrameMode ? 0 : supportData?.settlement || 0;
@@ -1132,9 +1486,9 @@ function AnalysisContent() {
       const solverMembers: (Beam | Column | InclinedMember)[] = members.map(
         (m) => {
           const startSolverNode = solverNodesMap.get(
-            JSON.stringify(m.startNode),
+            nodeKey(m.startNode),
           )!;
-          const endSolverNode = solverNodesMap.get(JSON.stringify(m.endNode))!;
+          const endSolverNode = solverNodesMap.get(nodeKey(m.endNode))!;
 
           const type = m.memberType || (isFrameMode ? "Column" : "Beam");
           const useDesignGeometry = m.workflowMode === "design";
@@ -1281,8 +1635,13 @@ function AnalysisContent() {
       let resultsData: any = {};
       let frameSidesway: boolean | null = null;
       let beamDiagrams: BeamMemberDiagram[] = [];
+      let memberEndMomentEquations: MemberEndMomentEquation[] = [];
       if (isFrameMode) {
         const solver = new FrameSolver(solverMembers as any);
+        memberEndMomentEquations = getMemberEndMomentEquations(
+          solver.updatedGetSupportMoments() as SymbolicSupportEquation[],
+          solverMembers,
+        );
         frameSidesway = solver.isSideSway();
         resultsData = {
           moments: solver.updatedGetFinalMoments(),
@@ -1290,6 +1649,10 @@ function AnalysisContent() {
         };
       } else {
         const solver = new BeamSolver(solverMembers as Beam[]);
+        memberEndMomentEquations = getMemberEndMomentEquations(
+          solver.updatedGetSupportMoments() as SymbolicSupportEquation[],
+          solverMembers,
+        );
         resultsData = {
           moments: solver.updatedGetFinalMoments(),
           reactions: solver.updatedGetSupportReactions(),
@@ -1319,12 +1682,20 @@ function AnalysisContent() {
         const spanId = `M${i + 1}`;
         const femStart = femSolver.getFixedEndMoment(m, "start") || 0;
         const femEnd = femSolver.getFixedEndMoment(m, "end") || 0;
+        const startLabel = solverNodeIdToLabel(m.startNode.id);
+        const endLabel = solverNodeIdToLabel(m.endNode.id);
 
         fems.push({ span: spanId, start: femStart, end: femEnd });
 
-        reportText += `Member ${spanId} (N${m.startNode.id} to N${m.endNode.id}):\n`;
+        reportText += `Member ${spanId} (${startLabel} to ${endLabel}):\n`;
         reportText += `     FEM Start: ${femStart.toFixed(2)}\n`;
         reportText += `     FEM End: ${femEnd.toFixed(2)}\n`;
+      });
+
+      reportText +=
+        "\nMember End Moment Equations (pre-solve, coefficient*term):\n";
+      memberEndMomentEquations.forEach((equation) => {
+        reportText += `     ${equation.key} = ${equation.expression}\n`;
       });
 
       reportText += "\nthe End Moments of each span is given below:\n";
@@ -1367,6 +1738,7 @@ function AnalysisContent() {
       reportText += "\nThe Support Reactions are Given Below:\n";
       Object.entries(resultsData.reactions as Record<string, any>).forEach(
         ([id, r]) => {
+          const reactionLabel = formatReactionLabel(id);
           let x: number | undefined = undefined;
           let y: number = 0;
           let m: number | undefined = undefined;
@@ -1384,7 +1756,7 @@ function AnalysisContent() {
             y = yVal;
             m = mVal;
 
-            reportText += `${id}:\n`;
+            reportText += `${reactionLabel}:\n`;
             if (xVal !== undefined) {
               reportText += `     X-reaction: ${xVal.toFixed(2)}\n`;
             }
@@ -1394,7 +1766,7 @@ function AnalysisContent() {
             }
           }
 
-          reactions.push({ id, x, y, m });
+          reactions.push({ id: reactionLabel, x, y, m });
         },
       );
 
@@ -1408,6 +1780,7 @@ function AnalysisContent() {
 
       setSolveResults({
         fems,
+        memberEndMomentEquations,
         endMoments,
         reactions,
         frameSidesway,
@@ -1589,7 +1962,9 @@ function AnalysisContent() {
                     <div className="flex items-center justify-between">
                       <div className="flex flex-col">
                         <span className="text-xs font-black tracking-tight mb-0.5">
-                          N{i + 1} ➔ N{i + 2}
+                          {frontendNodeLabel(m.startNode)}
+                          {" -> "}
+                          {frontendNodeLabel(m.endNode)}
                         </span>
                         <span className="text-[9px] font-black bg-white/10 px-1.5 py-0.5 rounded text-gray-400 border border-white/5 w-fit lowercase italic">
                           {m.memberType || "Beam"}
@@ -1945,6 +2320,38 @@ function AnalysisContent() {
                       </div>
                     ))}
                   </div>
+                </section>
+
+                <section>
+                  <h3 className="text-gray-500 font-black uppercase tracking-widest text-[10px] mb-6 flex items-center gap-3">
+                    <div className="w-1 h-3 bg-amber-500 rounded-full"></div>
+                    Member End Moment Equations (Pre-Solve)
+                  </h3>
+                  <p className="mb-4 text-[10px] text-gray-500">
+                    Slope-deflection equations with numeric FEM/E/I/L values
+                    before simultaneous-equation substitution.
+                  </p>
+                  {solveResults.memberEndMomentEquations.length > 0 ? (
+                    <div className="space-y-3">
+                      {solveResults.memberEndMomentEquations.map((equation) => (
+                        <div
+                          key={equation.key}
+                          className="bg-[#0c0c0c] border border-white/5 rounded-xl p-4"
+                        >
+                          <p className="text-[9px] font-black uppercase tracking-widest text-amber-300 mb-2">
+                            {equation.key}
+                          </p>
+                          <code className="block text-[11px] leading-5 text-gray-200 break-all font-mono">
+                            {equation.key} = {equation.expression}
+                          </code>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-gray-500">
+                      No symbolic member-end equations were generated.
+                    </p>
+                  )}
                 </section>
 
                 <section>
@@ -2532,3 +2939,4 @@ export default function AnalysisPage() {
     </Suspense>
   );
 }
+
