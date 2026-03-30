@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, useMemo } from "react";
+import { Suspense, useEffect, useState, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import MemberForm from "@/components/MemberForm";
 import Modal from "@/components/Modal";
@@ -48,6 +48,7 @@ import {
 } from "@/utils/unitUtils";
 import {
   AppUnitPreference,
+  DEFAULT_APP_UNITS,
   loadStoredDefaultUnits,
 } from "@/utils/unitPreferences";
 
@@ -239,15 +240,23 @@ function AnalysisContent() {
   const [activeDiagram, setActiveDiagram] = useState<
     "bmd" | "sfd" | "both" | "none"
   >("none");
-  const [defaultUnits] = useState<AppUnitPreference>(loadStoredDefaultUnits);
-  const [resultUnits, setResultUnits] = useState<ResultUnitPreference>(() => {
-    const initialDefaults = loadStoredDefaultUnits();
-    return {
-      force: initialDefaults.force,
-      length: initialDefaults.length,
-      moment: initialDefaults.moment,
-    };
+  const [defaultUnits, setDefaultUnits] =
+    useState<AppUnitPreference>(DEFAULT_APP_UNITS);
+  const [resultUnits, setResultUnits] = useState<ResultUnitPreference>({
+    force: DEFAULT_APP_UNITS.force,
+    length: DEFAULT_APP_UNITS.length,
+    moment: DEFAULT_APP_UNITS.moment,
   });
+
+  useEffect(() => {
+    const storedDefaults = loadStoredDefaultUnits();
+    setDefaultUnits(storedDefaults);
+    setResultUnits({
+      force: storedDefaults.force,
+      length: storedDefaults.length,
+      moment: storedDefaults.moment,
+    });
+  }, []);
 
   const normalizeCoord = (value: number) => Number(value.toFixed(6));
   const normalizeNode = (node: { x: number; y: number }) => ({

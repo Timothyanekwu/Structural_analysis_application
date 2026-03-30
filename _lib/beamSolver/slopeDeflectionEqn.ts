@@ -87,7 +87,7 @@ export class SlopeDeflection {
     const Emember: { [key: string]: number } = {};
     const Imember: { [key: string]: number } = {};
 
-    // we want to store the E and I values or each members connected to the node in the variable "Emember" and "Imember" as an Object
+    // we want to store the E and I values of each members connected to the node in the variable "Emember" and "Imember" as an Object
     for (const member of node.connectedMembers) {
       Emember[
         `member${member.member.startNode.id}${member.member.endNode.id}`
@@ -98,7 +98,7 @@ export class SlopeDeflection {
       ] = member.member.Icoef;
     }
 
-    // we instantiate the FixedEndMoments class (ready to be used)
+    // we instantiate the FixedEndMoments class (ready to be used) inside the logic folder
     const fem = new FixedEndMoments();
 
     let clk: { [key: string]: Term[] } = {};
@@ -106,6 +106,7 @@ export class SlopeDeflection {
 
     const curr = node;
 
+    // This is where the slope deflection equation exists
     for (const member of node.connectedMembers) {
       const currMember = member.member;
 

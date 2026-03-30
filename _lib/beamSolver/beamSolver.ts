@@ -9,7 +9,11 @@ import { SlopeDeflection } from "./slopeDeflectionEqn";
 import { Equation } from "../logic/simultaneousEqn";
 import { Node } from "../elements/node";
 import { ShearDesignEngine } from "../RCCDesign/ShearDesignEngine";
-import type { BeamData, ShearPoint, ShearZone } from "../RCCDesign/ShearDesignEngine";
+import type {
+  BeamData,
+  ShearPoint,
+  ShearZone,
+} from "../RCCDesign/ShearDesignEngine";
 
 export type BeamNodeMoment = {
   nodeId: string;
@@ -65,6 +69,7 @@ export class BeamSolver {
     )[];
   }
 
+  /** Returns updated support-moment equations for all beam nodes. */
   updatedGetSupportMoments() {
     return this.nodes.map((node) =>
       this.slopeDeflection.updatedSupportEquation(node),
@@ -128,6 +133,7 @@ export class BeamSolver {
     };
   }
 
+  // resolving member end reactions
   private memberEndReactions(
     member: Beam | Column | InclinedMember,
     momentsByNode: Map<string, BeamNodeMoment>,
@@ -183,7 +189,7 @@ export class BeamSolver {
         if (!support) return;
 
         let xReaction = -node.xLoad;
-        let yReaction = node.yLoad;
+        let yReaction = -node.yLoad;
         let momentReaction = 0;
 
         for (const conn of node.connectedMembers) {
@@ -238,14 +244,44 @@ export class BeamSolver {
           }
         }
       } else if (load.name === "VDL") {
-        // For now, only include full VDL that lies to the left of the section.
-        // This matches the current solver approximation.
-        if (load.highPosition <= x && load.lowPosition <= x) {
-          const resultant = load.getResultantLoad();
-          totalLoad += resultant.magnitude;
-          totalMomentAboutSection +=
-            resultant.magnitude * (x - resultant.position);
+        const start = Math.min(load.lowPosition, load.highPosition);
+        const end = Math.max(load.lowPosition, load.highPosition);
+        if (x <= start) {
+          continue;
         }
+
+        const activeEnd = Math.min(end, x);
+        const activeSpan = activeEnd - start;
+        if (activeSpan <= 0) {
+          continue;
+        }
+
+        const totalSpan = end - start;
+        const startMagnitude =
+          load.lowPosition <= load.highPosition
+            ? load.lowMagnitude
+            : load.highMagnitude;
+        const endMagnitude =
+          load.lowPosition <= load.highPosition
+            ? load.highMagnitude
+            : load.lowMagnitude;
+        const magnitudeSlope = (endMagnitude - startMagnitude) / totalSpan;
+
+        const resultant =
+          startMagnitude * activeSpan +
+          0.5 * magnitudeSlope * activeSpan * activeSpan;
+
+        if (Math.abs(resultant) < 1e-12) {
+          continue;
+        }
+
+        const firstMomentFromStart =
+          (startMagnitude * activeSpan * activeSpan) / 2 +
+          (magnitudeSlope * activeSpan * activeSpan * activeSpan) / 3;
+        const centroid = start + firstMomentFromStart / resultant;
+
+        totalLoad += resultant;
+        totalMomentAboutSection += resultant * (x - centroid);
       }
     }
 
@@ -314,14 +350,14 @@ export class BeamSolver {
   }
 
   /** RCC shear detailing zones derived directly from solver SFD points. */
-  getShearDesignZones(
-    member: Beam,
-    beamData: BeamData,
-    step: number = 0.1,
-  ): ShearZone[] {
-    const sfdData = this.getShearDiagramPoints(member, step);
-    return ShearDesignEngine.analyzeBeamRanges(sfdData, beamData);
-  }
+  // getShearDesignZones(
+  //   member: Beam,
+  //   beamData: BeamData,
+  //   step: number = 0.1,
+  // ): ShearZone[] {
+  //   const sfdData = this.getShearDiagramPoints(member, step);
+  //   return ShearDesignEngine.analyzeBeamRanges(sfdData, beamData);
+  // }
 
   /**
    * Calculates maximum positive and negative moments for each beam span.
